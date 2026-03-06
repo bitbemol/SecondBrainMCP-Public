@@ -248,7 +248,3 @@ swift test --filter PathValidatorTests # Run specific suite
 | MarkdownParser (4 suites) | 16 | Frontmatter, links, generation |
 | VaultManager | 10 | Read, list, filter, metadata |
 | SearchEngine | 12 | TF-IDF, ranking, incremental updates |
-
-## License
-
-MIT
