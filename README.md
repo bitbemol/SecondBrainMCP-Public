@@ -204,15 +204,6 @@ The server appends the file contents to its default instructions during startup.
 - **Soft deletes only** — files are never permanently deleted
 - **Commit message sanitization** — shell metacharacters stripped from git messages
 
-## Documentation
-
-| File | Description |
-|------|-------------|
-| [USAGE-GUIDE.md](USAGE-GUIDE.md) | Full usage guide, tool reference, third-party app compatibility |
-| [BUILD-GUIDE.md](BUILD-GUIDE.md) | Phase-by-phase build journal with design decisions |
-| [SETUP-SCRIPT.md](SETUP-SCRIPT.md) | Setup script docs and machine transfer guide |
-| [SecondBrainMCP-Spec.md](SecondBrainMCP-Spec.md) | Project specification (source of truth) |
-
 ## Architecture
 
 ```
