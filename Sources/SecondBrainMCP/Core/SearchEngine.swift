@@ -79,9 +79,9 @@ struct SearchEngine: Sendable {
 
     // MARK: - Reference Search
 
-    /// Search references by grepping cached `.txt` files in `.secondbrain-mcp/cache/references/`.
-    /// Each cache directory has `path.txt` (PDF relative path) and `metadata.json` (title/author),
-    /// written by `ReferenceManager.ensureCacheExists()`.
+    /// Search references by grepping cached text files in `.secondbrain-mcp/cache/references/`.
+    /// New format: greps `search_text.txt` (one per PDF, contains TOC or full text).
+    /// Legacy format: also matches `page_*.txt` files from old cache.
     func searchReferences(
         query: String,
         maxResults: Int = 10,
@@ -101,7 +101,7 @@ struct SearchEngine: Sendable {
 
         struct ScoredMatch {
             let pdfPath: String
-            let pageNumber: Int
+            let pageNumber: Int?
             let title: String
             let snippet: String
             let score: Double
@@ -114,10 +114,24 @@ struct SearchEngine: Sendable {
 
         for filePath in candidateFiles {
             let filename = (filePath as NSString).lastPathComponent
-            // Only match page files, skip metadata.json, path.txt, etc.
-            guard filename.hasPrefix("page_"), filename.hasSuffix(".txt") else { continue }
-            let pageStr = filename.dropFirst(5).dropLast(4)
-            guard let pageNum = Int(pageStr) else { continue }
+
+            // Determine page number based on filename
+            let isSearchText: Bool
+            let pageNumber: Int?
+            if filename == "search_text.txt" {
+                // New format: single text file per PDF, page resolved after content match
+                isSearchText = true
+                pageNumber = nil
+            } else if filename.hasPrefix("page_") && filename.hasSuffix(".txt") && filename != "page_labels.json" {
+                // Legacy format: per-page text files
+                let pageStr = filename.dropFirst(5).dropLast(4)
+                guard let num = Int(pageStr) else { continue }
+                isSearchText = false
+                pageNumber = num
+            } else {
+                // Skip path.txt, metadata.json, page_labels.json, etc.
+                continue
+            }
 
             let hashDirPath = (filePath as NSString).deletingLastPathComponent
             let hashDir = (hashDirPath as NSString).lastPathComponent
@@ -134,8 +148,8 @@ struct SearchEngine: Sendable {
 
             guard let content = try? String(contentsOfFile: filePath, encoding: .utf8) else { continue }
 
-            // Skip placeholder files (blank pages, extraction failures, etc.)
-            if PagePlaceholder.isPlaceholder(content) { continue }
+            // Skip legacy placeholder files
+            if content.hasPrefix("[SecondBrainMCP:") { continue }
 
             let contentLower = content.lowercased()
 
@@ -145,9 +159,19 @@ struct SearchEngine: Sendable {
             let snippet = generateSnippet(content: content, terms: terms)
             let score = computeScore(content: contentLower, title: resolved.title.lowercased(), terms: terms)
 
+            // For search_text.txt, resolve which page the match is on
+            // by finding the nearest preceding "--- Page N ---" marker
+            let resolvedPage: Int?
+            if isSearchText, let firstTerm = terms.first,
+               let matchRange = contentLower.range(of: firstTerm) {
+                resolvedPage = resolvePageFromMarker(content: content, matchPosition: matchRange.lowerBound)
+            } else {
+                resolvedPage = pageNumber
+            }
+
             matches.append(ScoredMatch(
                 pdfPath: resolved.pdfPath,
-                pageNumber: pageNum,
+                pageNumber: resolvedPage,
                 title: resolved.title,
                 snippet: snippet,
                 score: score
@@ -301,5 +325,17 @@ struct SearchEngine: Sendable {
         if endIdx < content.endIndex { snippet = snippet + "..." }
 
         return snippet
+    }
+
+    /// Resolve which page a match is on by finding the nearest preceding "--- Page N ---" marker.
+    /// search_text.txt format: "--- Page 1 ---\n...\n\n--- Page 2 ---\n..."
+    private func resolvePageFromMarker(content: String, matchPosition: String.Index) -> Int? {
+        let prefix = content[content.startIndex..<matchPosition]
+        // Search backwards for the last "--- Page N ---" before the match
+        guard let markerRange = prefix.range(of: "--- Page ", options: .backwards) else { return nil }
+        let afterMarker = content[markerRange.upperBound...]
+        guard let dashRange = afterMarker.range(of: " ---") else { return nil }
+        let pageStr = String(afterMarker[afterMarker.startIndex..<dashRange.lowerBound])
+        return Int(pageStr)
     }
 }

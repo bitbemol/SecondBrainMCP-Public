@@ -7,32 +7,15 @@ struct ServerConfig: Sendable {
     let readOnly: Bool
     let allowedExtensions: Set<String>
     let logLevel: LogLevel
-    let mode: OperationMode
 
     enum LogLevel: String, Sendable {
         case debug, info, warning, error
-    }
-
-    /// The binary operates in two modes:
-    /// - `.server`: normal MCP server via StdioTransport (default)
-    /// - `.extractBatch`: short-lived subprocess that extracts PDF pages, returns text via stdout pipe
-    enum OperationMode: Sendable {
-        case server
-        case extractBatch(ExtractBatchConfig)
-    }
-
-    struct ExtractBatchConfig: Sendable {
-        let vaultPath: String
-        let pdfRelativePath: String  // single PDF, e.g. "references/book.pdf"
-        let startPage: Int           // 1-indexed, inclusive
-        let endPage: Int             // 1-indexed, inclusive
     }
 
     enum ConfigError: Error, CustomStringConvertible {
         case missingVaultPath
         case vaultNotFound(String)
         case vaultNotDirectory(String)
-        case missingPDFPath
 
         var description: String {
             switch self {
@@ -42,8 +25,6 @@ struct ServerConfig: Sendable {
                 return "Vault path does not exist: \(path)"
             case .vaultNotDirectory(let path):
                 return "Vault path is not a directory: \(path)"
-            case .missingPDFPath:
-                return "Missing required argument for --extract-batch: --pdf-path <path>"
             }
         }
     }
@@ -58,10 +39,6 @@ struct ServerConfig: Sendable {
         var readOnly = false
         var extensions: Set<String> = ["md", "markdown"]
         var logLevel: LogLevel = .info
-        var extractBatch = false
-        var pdfPath: String?
-        var startPage = 1
-        var endPage = Int.max
 
         var i = 0
         while i < args.count {
@@ -92,21 +69,6 @@ struct ServerConfig: Sendable {
                     logLevel = level
                 }
 
-            case "--extract-batch":
-                extractBatch = true
-
-            case "--pdf-path":
-                i += 1
-                if i < args.count { pdfPath = args[i] }
-
-            case "--start-page":
-                i += 1
-                if i < args.count, let n = Int(args[i]) { startPage = n }
-
-            case "--end-page":
-                i += 1
-                if i < args.count, let n = Int(args[i]) { endPage = n }
-
             default:
                 // Unknown flags are silently ignored.
                 // This is intentional — forward compatibility with future flags.
@@ -132,27 +94,11 @@ struct ServerConfig: Sendable {
             throw ConfigError.vaultNotDirectory(resolvedPath)
         }
 
-        let mode: OperationMode
-        if extractBatch {
-            guard let pdf = pdfPath else {
-                throw ConfigError.missingPDFPath
-            }
-            mode = .extractBatch(ExtractBatchConfig(
-                vaultPath: resolvedPath,
-                pdfRelativePath: pdf,
-                startPage: startPage,
-                endPage: endPage
-            ))
-        } else {
-            mode = .server
-        }
-
         return ServerConfig(
             vaultPath: resolvedPath,
             readOnly: readOnly,
             allowedExtensions: extensions,
-            logLevel: logLevel,
-            mode: mode
+            logLevel: logLevel
         )
     }
 }

@@ -1,13 +1,18 @@
 import Foundation
+import PDFKit
+import Darwin
 
-/// Read-only manager for PDF references. This actor has ZERO write methods —
-/// the read-only constraint is structural, not a runtime check.
+/// Read-only manager for PDF references. Sendable struct — no mutable state,
+/// no actor serialization. Multiple `readReference()` calls run concurrently without blocking.
+/// Cache writes go to .secondbrain-mcp/cache/ (internal, not user content).
 ///
-/// ## Design (disk-is-truth)
-/// - `listReferences()` reads metadata from disk cache first, PDFKit fallback for uncached PDFs.
-/// - `ensureCacheExists()` extracts uncached PDFs to disk cache for grep-based search.
+/// ## Design (image-based)
+/// - `readReference()` renders PDF pages as JPEG images via PDFPageRenderer.
+/// - `ensureCacheExists()` builds lightweight cache: metadata, page labels, search text + outline.
+/// - `listReferences()` reads metadata from disk cache first, PDFKit fallback for uncached.
 /// - No in-memory caching — all state lives on disk.
-actor ReferenceManager {
+/// - No actor isolation — all properties are `let`, all methods are non-mutating.
+struct ReferenceManager: Sendable {
 
     private let referencesDir: String
     private let vaultPath: String
@@ -24,7 +29,9 @@ actor ReferenceManager {
         let relativePath: String
         let title: String
         let totalPages: Int
-        let pages: [PDFTextExtractor.PageText]
+        let renderedPages: [PDFPageRenderer.RenderedPage]
+        let pageLabels: [Int: String]  // 1-indexed page → book label
+        let outline: [PDFPageRenderer.OutlineEntry]?  // PDF bookmarks (chapter titles + page numbers)
     }
 
     struct ReferenceMetadata: Sendable {
@@ -35,7 +42,7 @@ actor ReferenceManager {
         let pageCount: Int
         let fileSizeMB: Double
         let creationDate: Date?
-        let textExtractable: Bool
+        let hasPageLabels: Bool
     }
 
     init(vaultPath: String) {
@@ -43,7 +50,7 @@ actor ReferenceManager {
         self.referencesDir = vaultPath + "/references"
     }
 
-    // MARK: - Read Operations (the ONLY operations)
+    // MARK: - Read Operations (the ONLY operations on references/)
 
     /// List all PDF files in the reference library.
     /// Reads metadata from disk cache (metadata.json) when available.
@@ -96,7 +103,7 @@ actor ReferenceManager {
                ) {
                 title = cacheMeta.title ?? MarkdownParser.titleFromFilename((relativePart as NSString).lastPathComponent)
                 author = cacheMeta.author
-                pageCount = cacheMeta.totalPDFPages ?? cacheMeta.pages
+                pageCount = cacheMeta.totalPages
             } else if let meta = PDFTextExtractor.lightMetadata(at: URL(fileURLWithPath: fullPath)) {
                 title = meta.title ?? MarkdownParser.titleFromFilename((relativePart as NSString).lastPathComponent)
                 author = meta.author
@@ -119,13 +126,16 @@ actor ReferenceManager {
         return results.sorted { $0.relativePath < $1.relativePath }
     }
 
-    /// Read pages from a PDF. Supports specific page, page range, query, or first N pages.
+    /// Read pages from a PDF as rendered JPEG images.
+    /// Opens the PDF document ONCE and reuses it for metadata, search, labels, and rendering.
+    /// Supports specific page, page range, book page label, query, or first N pages.
     func readReference(
         relativePath: String,
         page: Int? = nil,
         pageRange: String? = nil,
+        bookPage: String? = nil,
         query: String? = nil,
-        maxPages: Int = 10
+        maxPages: Int = 5
     ) throws -> ReferenceContent {
         let resolved = try PathValidator.resolve(
             relativePath: relativePath,
@@ -134,37 +144,67 @@ actor ReferenceManager {
         )
 
         let url = URL(fileURLWithPath: resolved)
-        guard let meta = PDFTextExtractor.metadata(at: url) else {
+
+        // Open the PDF ONCE — reuse this document for all operations below.
+        // This avoids opening the same PDF 3-8 times per call (metadata + labels + search + render).
+        guard let document = PDFDocument(url: url) else {
             throw ReferenceError.cannotOpenPDF(relativePath)
         }
 
-        let title = meta.title ?? MarkdownParser.titleFromFilename((resolved as NSString).lastPathComponent)
-        let pages: [PDFTextExtractor.PageText]
+        let attrs = document.documentAttributes
+        let pdfTitle = attrs?[PDFDocumentAttribute.titleAttribute] as? String
+        let title = pdfTitle ?? MarkdownParser.titleFromFilename((resolved as NSString).lastPathComponent)
+        let totalPages = document.pageCount
+
+        // Load page labels from cache, or extract from this document
+        let pageLabels = loadPageLabels(relativePath: relativePath, document: document)
+
+        // Extract PDF outline (bookmarks/TOC) — gives Claude structured chapter navigation
+        let outline = PDFPageRenderer.extractOutlineFromDocument(document)
+
+        let renderedPages: [PDFPageRenderer.RenderedPage]
 
         if let query {
-            pages = PDFTextExtractor.search(at: url, query: query, maxResults: maxPages)
-        } else if let page {
-            if let p = PDFTextExtractor.extractPage(at: url, page: page) {
-                pages = [p]
+            // Search within PDF, then render matching pages
+            let pageNumbers = PDFTextExtractor.searchDocument(document, query: query, maxResults: maxPages)
+            renderedPages = PDFPageRenderer.renderPagesFromDocument(document, pageNumbers: pageNumbers)
+        } else if let bookPage {
+            // Navigate by printed page label
+            let targetPage: Int?
+            if let pdfPage = PDFPageRenderer.resolveBookPage(label: bookPage, labels: pageLabels) {
+                targetPage = pdfPage
             } else {
-                pages = []
+                targetPage = Int(bookPage)  // Fall back to interpreting as number
             }
+            if let targetPage {
+                renderedPages = PDFPageRenderer.renderPagesFromDocument(document, pageNumbers: [targetPage])
+            } else {
+                renderedPages = []
+            }
+        } else if let page {
+            renderedPages = PDFPageRenderer.renderPagesFromDocument(document, pageNumbers: [page])
         } else if let pageRange {
-            let bounds = parsePageRange(pageRange, totalPages: meta.pageCount)
-            pages = PDFTextExtractor.extractPages(at: url, pages: bounds)
+            let bounds = parsePageRange(pageRange, totalPages: totalPages)
+            let cappedEnd = min(bounds.upperBound, bounds.lowerBound + maxPages)
+            renderedPages = PDFPageRenderer.renderPagesFromDocument(document, pageNumbers: Array(bounds.lowerBound..<cappedEnd))
         } else {
-            pages = PDFTextExtractor.extractAll(at: url, maxPages: maxPages)
+            // Default: render first N pages
+            let endPage = min(totalPages, maxPages)
+            let pages = endPage > 0 ? Array(1...endPage) : []
+            renderedPages = PDFPageRenderer.renderPagesFromDocument(document, pageNumbers: pages)
         }
 
         return ReferenceContent(
             relativePath: relativePath,
             title: title,
-            totalPages: meta.pageCount,
-            pages: pages
+            totalPages: totalPages,
+            renderedPages: renderedPages,
+            pageLabels: pageLabels,
+            outline: outline
         )
     }
 
-    /// Get metadata about a specific PDF (full metadata including text-extractability check).
+    /// Get metadata about a specific PDF. Uses lightMetadata to avoid text extraction.
     func getMetadata(relativePath: String) throws -> ReferenceMetadata {
         let resolved = try PathValidator.resolve(
             relativePath: relativePath,
@@ -173,34 +213,43 @@ actor ReferenceManager {
         )
 
         let url = URL(fileURLWithPath: resolved)
-        guard let meta = PDFTextExtractor.metadata(at: url) else {
+
+        // Open PDF once for both metadata and page labels
+        guard let document = PDFDocument(url: url) else {
             throw ReferenceError.cannotOpenPDF(relativePath)
+        }
+
+        let attrs = document.documentAttributes
+        let hasLabels = !loadPageLabels(relativePath: relativePath, document: document).isEmpty
+
+        // File size
+        let fileSize: Double
+        if let fileAttrs = try? FileManager.default.attributesOfItem(atPath: resolved),
+           let size = fileAttrs[.size] as? UInt64 {
+            fileSize = Double(size) / (1024 * 1024)
+        } else {
+            fileSize = 0
         }
 
         return ReferenceMetadata(
             relativePath: relativePath,
-            title: meta.title,
-            author: meta.author,
-            subject: meta.subject,
-            pageCount: meta.pageCount,
-            fileSizeMB: meta.fileSizeMB,
-            creationDate: meta.creationDate,
-            textExtractable: meta.textExtractable
+            title: attrs?[PDFDocumentAttribute.titleAttribute] as? String,
+            author: attrs?[PDFDocumentAttribute.authorAttribute] as? String,
+            subject: attrs?[PDFDocumentAttribute.subjectAttribute] as? String,
+            pageCount: document.pageCount,
+            fileSizeMB: fileSize,
+            creationDate: attrs?[PDFDocumentAttribute.creationDateAttribute] as? Date,
+            hasPageLabels: hasLabels
         )
     }
 
     // MARK: - Cache Management
 
-    /// Ensure all PDFs have cache files on disk. Extracts only uncached PDFs.
-    /// Writes `path.txt` in each cache directory so SearchEngine can resolve
-    /// cache hashes back to PDF paths without scanning the references/ directory.
-    /// Does NOT load page content into memory — pure disk I/O.
-    func ensureCacheExists(
-        maxPagesPerPDF: Int = 15_000,
-        concurrency: Int = 4
-    ) async {
+    /// Build lightweight cache for all uncached PDFs.
+    /// For each PDF: metadata, page labels, and search text (TOC or full text).
+    /// No subprocesses, no per-page text files. Memory-bounded extraction.
+    func ensureCacheExists() {
         let pdfPaths = listPDFPaths()
-
         ReferenceCache.ensureCacheRootExists(vaultPath: vaultPath)
 
         var uncachedPDFs: [(relativePath: String, filenameTitle: String, sourceModified: Date)] = []
@@ -210,34 +259,26 @@ actor ReferenceManager {
             guard let attrs = try? FileManager.default.attributesOfItem(atPath: fullPath),
                   let sourceModified = attrs[.modificationDate] as? Date else { continue }
 
-            // Always write path.txt so SearchEngine can resolve hash → PDF path
             let cacheDir = ReferenceCache.cacheDirectory(forPDF: pdfPath.relativePath, vaultPath: vaultPath)
-            let pathFile = cacheDir + "/path.txt"
-            if !FileManager.default.fileExists(atPath: pathFile) {
+
+            // Auto-migrate old cache format (per-page .txt files)
+            if ReferenceCache.isOldFormat(cacheDir: cacheDir) {
+                // Keep path.txt, delete everything else
+                let pathTxt = try? String(contentsOfFile: cacheDir + "/path.txt", encoding: .utf8)
+                try? FileManager.default.removeItem(atPath: cacheDir)
                 try? FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
-                try? pdfPath.relativePath.write(toFile: pathFile, atomically: true, encoding: .utf8)
+                if let pathTxt {
+                    try? pathTxt.write(toFile: cacheDir + "/path.txt", atomically: true, encoding: .utf8)
+                }
+                // Fall through to re-cache
             }
 
-            // Only read metadata.json (1 file) instead of readCachedPDF (all page files).
-            // We just need page counts to check if cache is complete.
+            // Check if cache is valid
             let meta = ReferenceCache.readMetadata(
                 vaultPath: vaultPath, relativePath: pdfPath.relativePath, sourceModified: sourceModified
             )
-            if let meta {
-                let isPartial: Bool
-                if let totalPages = meta.totalPDFPages {
-                    isPartial = meta.pages < totalPages && meta.pages < maxPagesPerPDF
-                } else {
-                    isPartial = true
-                }
-                if !isPartial { continue }
-            }
+            if meta != nil { continue }  // Cache is valid
 
-            if let meta {
-                fputs("SecondBrainMCP: re-extract (partial: \(meta.pages)/\(meta.totalPDFPages ?? -1)): \(pdfPath.relativePath)\n", stderr)
-            } else {
-                fputs("SecondBrainMCP: re-extract (no cache): \(pdfPath.relativePath)\n", stderr)
-            }
             uncachedPDFs.append((
                 relativePath: pdfPath.relativePath,
                 filenameTitle: pdfPath.filenameTitle,
@@ -250,7 +291,7 @@ actor ReferenceManager {
             return
         }
 
-        // Acquire extraction lock — only one server instance extracts at a time
+        // Acquire extraction lock — only one server instance caches at a time
         let lockDir = vaultPath + "/.secondbrain-mcp"
         try? FileManager.default.createDirectory(atPath: lockDir, withIntermediateDirectories: true)
         let lockPath = lockDir + "/extraction.lock"
@@ -258,7 +299,7 @@ actor ReferenceManager {
 
         if lockFd < 0 || flock(lockFd, LOCK_EX | LOCK_NB) != 0 {
             if lockFd >= 0 { close(lockFd) }
-            fputs("SecondBrainMCP: another instance is extracting, skipping\n", stderr)
+            fputs("SecondBrainMCP: another instance is caching, skipping\n", stderr)
             return
         }
 
@@ -267,151 +308,38 @@ actor ReferenceManager {
             close(lockFd)
         }
 
-        fputs("SecondBrainMCP: \(uncachedPDFs.count) PDFs need cache extraction\n", stderr)
+        let startRSS = Self.currentRSSMB()
+        fputs("SecondBrainMCP: \(uncachedPDFs.count) PDFs need cache building (RSS: \(startRSS) MB)\n", stderr)
 
-        struct ChunkWork: Sendable {
-            let pdfRelativePath: String
-            let startPage: Int
-            let endPage: Int
-        }
+        /// Safety valve: stop caching if memory exceeds this threshold to prevent OOM.
+        /// CoreGraphics may leak internal caches per PDFDocument that autoreleasepool cannot reclaim.
+        let maxRSSMB = 3000  // 3 GB
 
-        struct PDFInfo {
-            let pageCount: Int
-            let sourceModified: Date
-            let filenameTitle: String
-            let title: String?
-            let author: String?
-        }
-
-        let pagesPerChunk = 50
-        var allChunks: [ChunkWork] = []
-        var pdfInfoMap: [String: PDFInfo] = [:]
-
+        var completed = 0
         for pdf in uncachedPDFs {
-            let fullPath = vaultPath + "/" + pdf.relativePath
-            let url = URL(fileURLWithPath: fullPath)
-
-            let meta: PDFTextExtractor.PDFMetadata? = autoreleasepool {
-                PDFTextExtractor.lightMetadata(at: url)
-            }
-            guard let meta, meta.pageCount > 0 else { continue }
-
-            let pagesToExtract = min(meta.pageCount, maxPagesPerPDF)
-
-            let cacheDir = ReferenceCache.cacheDirectory(forPDF: pdf.relativePath, vaultPath: vaultPath)
-            // Preserve path.txt when clearing cache
-            let existingPathTxt = try? String(contentsOfFile: cacheDir + "/path.txt", encoding: .utf8)
-            try? FileManager.default.removeItem(atPath: cacheDir)
-            try? FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
-            try? (existingPathTxt ?? pdf.relativePath).write(
-                toFile: cacheDir + "/path.txt", atomically: true, encoding: .utf8
-            )
-
-            var start = 1
-            while start <= pagesToExtract {
-                let end = min(start + pagesPerChunk - 1, pagesToExtract)
-                allChunks.append(ChunkWork(pdfRelativePath: pdf.relativePath, startPage: start, endPage: end))
-                start = end + 1
+            // Check memory before each PDF — bail out before OOM
+            let rss = Self.currentRSSMB()
+            if rss > maxRSSMB {
+                fputs("SecondBrainMCP: WARNING: RSS exceeded \(maxRSSMB) MB (\(rss) MB) during cache building. " +
+                      "Stopping to prevent OOM. \(completed)/\(uncachedPDFs.count) PDFs cached. " +
+                      "Remaining PDFs will be cached on next restart.\n", stderr)
+                break
             }
 
-            pdfInfoMap[pdf.relativePath] = PDFInfo(
-                pageCount: meta.pageCount, sourceModified: pdf.sourceModified,
-                filenameTitle: pdf.filenameTitle, title: meta.title, author: meta.author
-            )
-        }
-
-        let spawnConcurrency = max(2, concurrency)
-        fputs("SecondBrainMCP: extraction plan: \(pdfInfoMap.count) PDFs, \(allChunks.count) chunks, concurrency \(spawnConcurrency)\n", stderr)
-
-        struct ChunkResult: Sendable {
-            let pdfRelativePath: String
-            let startPage: Int
-            let endPage: Int
-            let extraction: SubprocessSpawner.ExtractionResult
-        }
-
-        var completedChunks = 0
-        let totalChunks = allChunks.count
-        let vp = self.vaultPath
-
-        await withTaskGroup(of: ChunkResult.self) { group in
-            var nextIndex = 0
-
-            while nextIndex < allChunks.count, nextIndex < spawnConcurrency {
-                let chunk = allChunks[nextIndex]
-                group.addTask {
-                    let extraction = (try? await SubprocessSpawner.extractPages(
-                        vaultPath: vp, pdfRelativePath: chunk.pdfRelativePath,
-                        startPage: chunk.startPage, endPage: chunk.endPage
-                    )) ?? SubprocessSpawner.ExtractionResult(pages: [], completed: false)
-                    return ChunkResult(
-                        pdfRelativePath: chunk.pdfRelativePath, startPage: chunk.startPage,
-                        endPage: chunk.endPage, extraction: extraction
-                    )
-                }
-                nextIndex += 1
-            }
-
-            for await result in group {
-                let cacheDir = ReferenceCache.cacheDirectory(
-                    forPDF: result.pdfRelativePath, vaultPath: vp
+            autoreleasepool {
+                cacheSinglePDF(
+                    relativePath: pdf.relativePath,
+                    filenameTitle: pdf.filenameTitle,
+                    sourceModified: pdf.sourceModified
                 )
-
-                let extractedPageNumbers = Set(result.extraction.pages.map { $0.p })
-                for page in result.extraction.pages {
-                    let pagePath = cacheDir + "/page_\(String(format: "%03d", page.p)).txt"
-                    try? page.t.write(toFile: pagePath, atomically: true, encoding: .utf8)
-                }
-
-                if !result.extraction.completed {
-                    for pageNum in result.startPage...result.endPage {
-                        guard !extractedPageNumbers.contains(pageNum) else { continue }
-                        let pagePath = cacheDir + "/page_\(String(format: "%03d", pageNum)).txt"
-                        let warning = PagePlaceholder.extractionFailed(page: pageNum).message
-                        try? warning.write(toFile: pagePath, atomically: true, encoding: .utf8)
-                    }
-                    fputs("SecondBrainMCP: chunk failed (pages \(result.startPage)-\(result.endPage) of \(result.pdfRelativePath)), salvaged \(extractedPageNumbers.count)/\(result.endPage - result.startPage + 1) pages\n", stderr)
-                }
-
-                completedChunks += 1
-                if completedChunks % 20 == 0 || completedChunks == totalChunks {
-                    fputs("SecondBrainMCP: \(completedChunks)/\(totalChunks) chunks done\n", stderr)
-                }
-
-                if nextIndex < allChunks.count {
-                    let chunk = allChunks[nextIndex]
-                    group.addTask {
-                        let extraction = (try? await SubprocessSpawner.extractPages(
-                            vaultPath: vp, pdfRelativePath: chunk.pdfRelativePath,
-                            startPage: chunk.startPage, endPage: chunk.endPage
-                        )) ?? SubprocessSpawner.ExtractionResult(pages: [], completed: false)
-                        return ChunkResult(
-                            pdfRelativePath: chunk.pdfRelativePath, startPage: chunk.startPage,
-                            endPage: chunk.endPage, extraction: extraction
-                        )
-                    }
-                    nextIndex += 1
-                }
+            }
+            completed += 1
+            if completed % 50 == 0 || completed == uncachedPDFs.count {
+                fputs("SecondBrainMCP: \(completed)/\(uncachedPDFs.count) PDFs cached (RSS: \(Self.currentRSSMB()) MB)\n", stderr)
             }
         }
 
-        // Write metadata.json for each extracted PDF
-        for (pdfPath, info) in pdfInfoMap {
-            let cacheDir = ReferenceCache.cacheDirectory(forPDF: pdfPath, vaultPath: vp)
-            let pageFiles = (try? FileManager.default.contentsOfDirectory(atPath: cacheDir))?
-                .filter { $0.hasPrefix("page_") && $0.hasSuffix(".txt") } ?? []
-            guard !pageFiles.isEmpty else { continue }
-
-            let cacheMeta = ReferenceCache.CacheMetadata(
-                title: info.title, author: info.author, pages: pageFiles.count,
-                cachedAt: ISO8601DateFormatter().string(from: Date()),
-                sourceModified: info.sourceModified, totalPDFPages: info.pageCount
-            )
-            let metaData = try? JSONEncoder().encode(cacheMeta)
-            try? metaData?.write(to: URL(fileURLWithPath: cacheDir + "/metadata.json"))
-        }
-
-        fputs("SecondBrainMCP: cache extraction complete for \(pdfInfoMap.count) PDFs\n", stderr)
+        fputs("SecondBrainMCP: cache building complete — \(completed)/\(uncachedPDFs.count) PDFs cached (RSS: \(Self.currentRSSMB()) MB)\n", stderr)
     }
 
     // MARK: - Errors
@@ -434,6 +362,98 @@ actor ReferenceManager {
         let filenameTitle: String
     }
 
+    /// Load page labels from cache, or extract from an already-opened PDF document and cache them.
+    private func loadPageLabels(relativePath: String, document: PDFDocument) -> [Int: String] {
+        // Try cache first
+        let cached = ReferenceCache.readPageLabels(vaultPath: vaultPath, relativePath: relativePath)
+        if !cached.isEmpty { return cached }
+
+        // Extract from the already-opened document (no second PDF open)
+        guard let labels = PDFPageRenderer.extractPageLabelsFromDocument(document) else {
+            return [:]
+        }
+
+        // Cache for next time (writes to .secondbrain-mcp/cache/, not references/)
+        let dir = ReferenceCache.cacheDirectory(forPDF: relativePath, vaultPath: vaultPath)
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let entries = labels.map { ReferenceCache.PageLabelEntry(index: $0.key, label: $0.value) }
+            .sorted { $0.index < $1.index }
+        if let data = try? JSONEncoder().encode(entries) {
+            try? data.write(to: URL(fileURLWithPath: dir + "/page_labels.json"))
+        }
+
+        return labels
+    }
+
+    /// Build cache for a single PDF: metadata, page labels, search text.
+    /// Opens the PDF once and reuses the document for all operations.
+    private func cacheSinglePDF(
+        relativePath: String,
+        filenameTitle: String,
+        sourceModified: Date
+    ) {
+        let fullPath = vaultPath + "/" + relativePath
+        let url = URL(fileURLWithPath: fullPath)
+
+        // Open PDF ONCE — reuse for metadata, labels, and text extraction
+        guard let document = PDFDocument(url: url) else {
+            fputs("SecondBrainMCP: WARNING: cannot open PDF: \(relativePath)\n", stderr)
+            return
+        }
+        guard document.pageCount > 0 else { return }
+
+        let attrs = document.documentAttributes
+        let title = attrs?[PDFDocumentAttribute.titleAttribute] as? String
+        let author = attrs?[PDFDocumentAttribute.authorAttribute] as? String
+
+        // Extract page labels from the already-opened document
+        let pageLabels = PDFPageRenderer.extractPageLabelsFromDocument(document)
+
+        // Determine search strategy based on page count
+        let isShortPDF = document.pageCount < ReferenceCache.shortPDFThreshold
+        let pagesToExtract = isShortPDF ? document.pageCount : ReferenceCache.tocPages
+        let strategy: ReferenceCache.CacheMetadata.SearchStrategy = isShortPDF
+            ? .fullText
+            : .tocOnly(pages: pagesToExtract)
+
+        // Extract text for search from the already-opened document (limited pages, with autoreleasepool per page)
+        let pages = PDFTextExtractor.extractAllFromDocument(document, maxPages: pagesToExtract)
+        var searchText = pages.map { "--- Page \($0.pageNumber) ---\n\($0.text)" }.joined(separator: "\n\n")
+
+        // Include outline entries for chapter-level search coverage.
+        // Critical for long books where only first 30 pages are indexed —
+        // a search for "neural networks" will match a chapter titled "Neural Networks"
+        // even if the indexed pages don't mention it.
+        // Each entry gets a "--- Page N ---" marker so SearchEngine resolves
+        // the correct chapter start page from grep hits.
+        if let outline = PDFPageRenderer.extractOutlineFromDocument(document) {
+            var outlineLines: [String] = ["--- Outline ---"]
+            for entry in outline {
+                outlineLines.append("--- Page \(entry.pageNumber) ---")
+                outlineLines.append(entry.title)
+            }
+            searchText += "\n\n" + outlineLines.joined(separator: "\n")
+        }
+
+        let metadata = ReferenceCache.CacheMetadata(
+            title: title,
+            author: author,
+            totalPages: document.pageCount,
+            cachedAt: ISO8601DateFormatter().string(from: Date()),
+            sourceModified: sourceModified,
+            searchStrategy: strategy,
+            cacheVersion: ReferenceCache.CacheMetadata.currentVersion
+        )
+
+        ReferenceCache.writeCache(
+            vaultPath: vaultPath,
+            relativePath: relativePath,
+            metadata: metadata,
+            pageLabels: pageLabels,
+            searchText: searchText
+        )
+    }
+
     private func listPDFPaths() -> [PDFPath] {
         guard FileManager.default.fileExists(atPath: referencesDir) else { return [] }
         let fm = FileManager.default
@@ -453,6 +473,20 @@ actor ReferenceManager {
         }
 
         return results
+    }
+
+    /// Get current process RSS in megabytes via mach_task_basic_info.
+    /// Used to monitor memory during cache building and bail out before OOM.
+    private static func currentRSSMB() -> Int {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return 0 }
+        return Int(info.resident_size) / (1024 * 1024)
     }
 
     private func parsePageRange(_ range: String, totalPages: Int) -> Range<Int> {

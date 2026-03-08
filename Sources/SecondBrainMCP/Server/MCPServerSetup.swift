@@ -91,7 +91,7 @@ struct MCPServerSetup {
             case "secondbrain://tags":
                 return try await Self.handleTagsResource(vaultManager: vaultManager)
             case "secondbrain://references":
-                return await Self.handleReferencesResource(referenceManager: referenceManager)
+                return Self.handleReferencesResource(referenceManager: referenceManager)
             default:
                 throw MCPError.invalidParams("Unknown resource URI: \(params.uri)")
             }
@@ -102,18 +102,15 @@ struct MCPServerSetup {
         try await server.start(transport: transport)
         log("MCP server started, accepting connections")
 
-        // ── Background: cache any uncached PDFs (no in-memory indexing) ──
-        // Only extracts PDFs that don't have cache files yet. Existing cache is untouched.
+        // ── Background: build lightweight cache for uncached PDFs ──
+        // Caches metadata, page labels, search text + outline (TOC for long PDFs, full text for short ones).
         // Search works immediately using whatever cache exists on disk.
         Task {
             // Let the MCP handshake complete before heavy work
             try? await Task.sleep(for: .seconds(1))
 
             let stepStart = ContinuousClock.now
-            await referenceManager.ensureCacheExists(
-                maxPagesPerPDF: 15_000,
-                concurrency: max(2, ProcessInfo.processInfo.activeProcessorCount - 2)
-            )
+            referenceManager.ensureCacheExists()
             log("background: PDF cache check: \(stepStart.duration(to: .now))")
         }
 
@@ -408,15 +405,16 @@ struct MCPServerSetup {
 
         tools.append(Tool(
             name: "read_reference",
-            description: "Extract text from a PDF. Supports specific page, page range, or search within document.",
+            description: "Read PDF pages. Returns extracted text (for accurate reading) + JPEG images (for diagrams/figures/equations). Also returns PDF outline (table of contents with chapter names and page numbers) and page labels. Use 'query' to search within a specific PDF (searches full document text). Use 'book_page' to navigate by printed page number.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
                     "path": .object(["type": .string("string"), "description": .string("Relative path to PDF (e.g. references/book.pdf)")]),
-                    "page": .object(["type": .string("integer"), "description": .string("Specific page number (1-indexed)")]),
+                    "page": .object(["type": .string("integer"), "description": .string("PDF page number (1-indexed, physical page in the PDF file)")]),
+                    "book_page": .object(["type": .string("string"), "description": .string("Navigate by printed page number (e.g. '42', 'xii'). Uses page labels embedded in the PDF.")]),
                     "page_range": .object(["type": .string("string"), "description": .string("Page range like '10-25'")]),
-                    "query": .object(["type": .string("string"), "description": .string("Search within the PDF")]),
-                    "max_pages": .object(["type": .string("integer"), "description": .string("Limit pages returned (default: 10)")])
+                    "query": .object(["type": .string("string"), "description": .string("Search within the PDF for text, returns matching pages as images")]),
+                    "max_pages": .object(["type": .string("integer"), "description": .string("Limit pages returned (default: 5). Each page is a JPEG image.")])
                 ]),
                 "required": .array([.string("path")])
             ]),
@@ -514,13 +512,13 @@ struct MCPServerSetup {
             return await handleVaultChangelog(params: params, gitManager: gitManager)
         // Reference tools
         case "list_references":
-            return await handleListReferences(params: params, referenceManager: referenceManager)
+            return handleListReferences(params: params, referenceManager: referenceManager)
         case "read_reference":
             return await handleReadReference(params: params, referenceManager: referenceManager)
         case "search_references":
             return handleSearchReferences(params: params, searchEngine: searchEngine)
         case "get_reference_metadata":
-            return await handleGetReferenceMetadata(params: params, referenceManager: referenceManager)
+            return handleGetReferenceMetadata(params: params, referenceManager: referenceManager)
         default:
             return CallTool.Result(
                 content: [.text("Unknown tool: \(params.name)")],
@@ -883,9 +881,9 @@ struct MCPServerSetup {
     private static func handleListReferences(
         params: CallTool.Parameters,
         referenceManager: ReferenceManager
-    ) async -> CallTool.Result {
+    ) -> CallTool.Result {
         let directory = params.arguments?["directory"]?.stringValue
-        let refs = await referenceManager.listReferences(directory: directory)
+        let refs = referenceManager.listReferences(directory: directory)
 
         if refs.isEmpty {
             return CallTool.Result(content: [.text("No PDF references found.")])
@@ -910,31 +908,77 @@ struct MCPServerSetup {
         }
 
         let page = params.arguments?["page"]?.intValue
+        let bookPage = params.arguments?["book_page"]?.stringValue
         let pageRange = params.arguments?["page_range"]?.stringValue
         let query = params.arguments?["query"]?.stringValue
-        let maxPages = params.arguments?["max_pages"]?.intValue ?? 10
+        let maxPages = min(params.arguments?["max_pages"]?.intValue ?? 5, 20)
 
         do {
-            let result = try await referenceManager.readReference(
-                relativePath: path,
-                page: page,
-                pageRange: pageRange,
-                query: query,
-                maxPages: maxPages
-            )
-
-            if result.pages.isEmpty {
-                return CallTool.Result(content: [.text("No text extracted from \(path). The PDF may be scanned/image-only.")])
+            // Timeout protection: corrupt PDFs can hang PDFKit indefinitely.
+            // Race the actual work against a 60-second deadline.
+            let result = try await withThrowingTaskGroup(of: ReferenceManager.ReferenceContent.self) { group in
+                group.addTask {
+                    try referenceManager.readReference(
+                        relativePath: path,
+                        page: page,
+                        pageRange: pageRange,
+                        bookPage: bookPage,
+                        query: query,
+                        maxPages: maxPages
+                    )
+                }
+                group.addTask {
+                    try await Task.sleep(for: .seconds(60))
+                    throw MCPError.internalError("Timeout: PDF took longer than 60 seconds to process. The file may be corrupt or too large.")
+                }
+                let first = try await group.next()!
+                group.cancelAll()
+                return first
             }
 
-            var lines: [String] = ["\(result.title) (\(result.totalPages) pages total)", ""]
-            for p in result.pages {
-                lines.append("--- Page \(p.pageNumber) ---")
-                lines.append(p.text)
-                lines.append("")
+            if result.renderedPages.isEmpty {
+                return CallTool.Result(content: [.text("No pages rendered from \(path). The page may not exist.")])
             }
 
-            return CallTool.Result(content: [.text(lines.joined(separator: "\n"))])
+            // Build mixed content: text + JPEG images per page
+            // Claude uses text for accurate reading, images for diagrams/equations/figures
+            var content: [Tool.Content] = []
+            content.append(.text("\(result.title) (\(result.totalPages) pages total)"))
+
+            for p in result.renderedPages {
+                let labelInfo = p.bookLabel.map { " (book page: \($0))" } ?? ""
+                content.append(.text("--- PDF Page \(p.pageNumber)\(labelInfo) ---"))
+
+                // Include extracted text first (fast, accurate for Claude to process)
+                if let text = p.extractedText {
+                    content.append(.text(text))
+                }
+
+                // Always include the image (for diagrams, figures, equations, formatting)
+                content.append(.image(data: p.jpegData.base64EncodedString(), mimeType: "image/jpeg", metadata: nil))
+            }
+
+            // Include PDF outline (bookmarks/TOC) if available — structured chapter navigation
+            if let outline = result.outline {
+                let indent = ["", "  ", "    "]
+                let tocLines = outline.prefix(50).map { entry in
+                    let prefix = indent[min(entry.level, 2)]
+                    return "\(prefix)- \(entry.title) (page \(entry.pageNumber))"
+                }
+                let truncated = outline.count > 50 ? "\n  ... (\(outline.count - 50) more entries)" : ""
+                content.append(.text("## Table of Contents (from PDF bookmarks)\n" + tocLines.joined(separator: "\n") + truncated))
+            }
+
+            // Include page label info if available and useful
+            if !result.pageLabels.isEmpty {
+                let labelSample = result.pageLabels.sorted { $0.key < $1.key }
+                    .prefix(5)
+                    .map { "PDF page \($0.key) = book page \($0.value)" }
+                    .joined(separator: ", ")
+                content.append(.text("Page labels: \(labelSample)\(result.pageLabels.count > 5 ? "..." : "")"))
+            }
+
+            return CallTool.Result(content: content)
         } catch {
             return CallTool.Result(content: [.text("Error: \(error)")], isError: true)
         }
@@ -976,13 +1020,13 @@ struct MCPServerSetup {
     private static func handleGetReferenceMetadata(
         params: CallTool.Parameters,
         referenceManager: ReferenceManager
-    ) async -> CallTool.Result {
+    ) -> CallTool.Result {
         guard let path = params.arguments?["path"]?.stringValue else {
             return CallTool.Result(content: [.text("Missing required parameter: path")], isError: true)
         }
 
         do {
-            let meta = try await referenceManager.getMetadata(relativePath: path)
+            let meta = try referenceManager.getMetadata(relativePath: path)
             let formatter = ISO8601DateFormatter()
 
             let info: [String] = [
@@ -992,7 +1036,7 @@ struct MCPServerSetup {
                 "Pages: \(meta.pageCount)",
                 "Size: \(String(format: "%.1f", meta.fileSizeMB)) MB",
                 "Created: \(meta.creationDate.map { formatter.string(from: $0) } ?? "Unknown")",
-                "Text extractable: \(meta.textExtractable ? "Yes" : "No (scanned/image-only)")"
+                "Page labels: \(meta.hasPageLabels ? "Yes (book page numbers available via book_page parameter)" : "No")"
             ]
 
             return CallTool.Result(content: [.text(info.joined(separator: "\n"))])
@@ -1074,8 +1118,8 @@ struct MCPServerSetup {
 
     private static func handleReferencesResource(
         referenceManager: ReferenceManager
-    ) async -> ReadResource.Result {
-        let refs = await referenceManager.listReferences()
+    ) -> ReadResource.Result {
+        let refs = referenceManager.listReferences()
 
         let entries: [[String: Any]] = refs.map { ref in
             var entry: [String: Any] = [

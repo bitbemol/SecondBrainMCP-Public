@@ -6,26 +6,3 @@ DerivedData/
 .swiftpm/configuration/registries.json
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
-
-# Swift Package Index / Xcode Cloud
-.swiftpm/xcode/
-
-# Package.resolved – commit this if it's an app/executable,
-# ignore if it's a library. For a CLI app, you likely want it committed.
-# Package.resolved
-
-# Release artifacts / distribution
-*.zip
-*.tar.gz
-
-# Environment / secrets (if you ever use .env files for config)
-.env
-.env.local
-
-# Tuist / Xcodegen (if you ever adopt them)
-Derived/
-
-# Editor-specific
-.vscode/
-*.swp
-*~

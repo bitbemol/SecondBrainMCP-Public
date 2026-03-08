@@ -33,7 +33,7 @@ struct SearchEngineTests {
         return (SearchEngine(vaultPath: tmpDir), tmpDir)
     }
 
-    /// Create a cached reference in a temp vault. Writes path.txt, metadata.json, and page files.
+    /// Create a cached reference in a temp vault. Writes path.txt, metadata.json, and search_text.txt.
     private func createCachedReference(
         vaultPath: String,
         pdfRelativePath: String,
@@ -55,18 +55,16 @@ struct SearchEngineTests {
         // Write path.txt (required for SearchEngine hash → path resolution)
         try pdfRelativePath.write(toFile: cacheDir + "/path.txt", atomically: true, encoding: .utf8)
 
-        // Write page files
-        for (pageNum, text) in pages {
-            try text.write(
-                toFile: cacheDir + "/page_\(String(format: "%03d", pageNum)).txt",
-                atomically: true, encoding: .utf8
-            )
-        }
+        // Write search_text.txt (new format: single concatenated text file)
+        let searchText = pages.map { "--- Page \($0.0) ---\n\($0.1)" }.joined(separator: "\n\n")
+        try searchText.write(toFile: cacheDir + "/search_text.txt", atomically: true, encoding: .utf8)
 
         // Write metadata.json
         let meta = ReferenceCache.CacheMetadata(
-            title: title, author: author, pages: pages.count,
-            cachedAt: "2026-01-01", sourceModified: Date(), totalPDFPages: pages.count
+            title: title, author: author, totalPages: pages.count,
+            cachedAt: "2026-01-01", sourceModified: Date(),
+            searchStrategy: .fullText,
+            cacheVersion: ReferenceCache.CacheMetadata.currentVersion
         )
         try JSONEncoder().encode(meta).write(to: URL(fileURLWithPath: cacheDir + "/metadata.json"))
     }
@@ -204,8 +202,8 @@ struct SearchEngineTests {
         #expect(results[0].title == "ML Book")
     }
 
-    @Test("Reference search respects maxPerDocument")
-    func referenceMaxPerDocument() throws {
+    @Test("Reference search returns one result per PDF with search_text.txt")
+    func referenceOneResultPerPDF() throws {
         let tmpDir = FileManager.default.temporaryDirectory
             .appendingPathComponent("SearchEnginePerDocTests-\(UUID().uuidString)").path
         defer { cleanup(tmpDir) }
@@ -219,36 +217,39 @@ struct SearchEngineTests {
         )
 
         let engine = SearchEngine(vaultPath: tmpDir)
-        let results = engine.searchReferences(query: "algorithms", maxPerDocument: 2)
-        #expect(results.count == 2)
+        let results = engine.searchReferences(query: "algorithms")
+        // New format: one search_text.txt per PDF → one result per PDF
+        // Page number is resolved from "--- Page N ---" markers in the file
+        #expect(results.count == 1)
+        #expect(results[0].pageNumber == 1)  // "algorithms" first appears in page 1 section
+        #expect(results[0].title == "Algo Book")
     }
 
-    @Test("Reference search skips placeholder pages")
-    func referenceSkipsPlaceholders() throws {
+    @Test("Reference search finds results across multiple PDFs")
+    func referenceMultiplePDFs() throws {
         let tmpDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("SearchEnginePlaceholderTests-\(UUID().uuidString)").path
+            .appendingPathComponent("SearchEngineMultiPDFTests-\(UUID().uuidString)").path
         defer { cleanup(tmpDir) }
 
         try createCachedReference(
             vaultPath: tmpDir,
-            pdfRelativePath: "references/book.pdf",
-            title: "Book",
+            pdfRelativePath: "references/book1.pdf",
+            title: "ML Book",
             author: nil,
-            pages: [
-                (1, "Real content about algorithms here."),
-            ]
+            pages: [(1, "Machine learning algorithms for classification.")]
         )
 
-        // Add a placeholder page manually
-        let hash = ReferenceCache.hashPath("references/book.pdf")
-        let cacheDir = tmpDir + "/.secondbrain-mcp/cache/references/" + hash
-        try "[SecondBrainMCP: page 2 extraction failed — subprocess timed out or crashed. Manual review recommended.]"
-            .write(toFile: cacheDir + "/page_002.txt", atomically: true, encoding: .utf8)
+        try createCachedReference(
+            vaultPath: tmpDir,
+            pdfRelativePath: "references/book2.pdf",
+            title: "Deep Learning",
+            author: nil,
+            pages: [(1, "Neural network algorithms and backpropagation.")]
+        )
 
         let engine = SearchEngine(vaultPath: tmpDir)
         let results = engine.searchReferences(query: "algorithms")
-        #expect(results.count == 1)
-        #expect(results[0].pageNumber == 1)
+        #expect(results.count == 2)
     }
 
     @Test("Reference search uses title from metadata.json")
