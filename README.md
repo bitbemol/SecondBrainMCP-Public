@@ -4,7 +4,7 @@ A local MCP server in Swift that gives Claude Desktop read/write access to a Mar
 
 ```
 Claude Desktop  ─┐
-                 ├──stdio──> SecondBrainMCP
+                 ├── stdio ──> SecondBrainMCP
 Claude Code CLI ─┘                |
                                   +── notes/       (Markdown, read/write, git tracked)
                                   +── references/  (PDFs, read-only)
