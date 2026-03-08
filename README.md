@@ -3,8 +3,8 @@
 A local MCP server in Swift that gives Claude Desktop read/write access to a Markdown note vault and read-only access to a PDF reference library. Every note edit is automatically committed to git.
 
 ```
-Claude Desktop ─┐
-                ├──stdio──> SecondBrainMCP
+Claude Desktop  ─┐
+                 ├──stdio──> SecondBrainMCP
 Claude Code CLI ─┘                |
                                   +── notes/       (Markdown, read/write, git tracked)
                                   +── references/  (PDFs, read-only)
@@ -18,8 +18,8 @@ Claude Code CLI ─┘                |
 - **4 MCP resources** — vault index, recent notes, tags summary, references index
 - **Git auto-commit** — every write creates a commit with `[SecondBrainMCP]` prefix
 - **Soft deletes** — deleted notes move to `.trash/`, never permanently removed
-- **Full-text search** — TF-IDF scoring across notes and PDFs with title boost
-- **PDF text extraction** — per-page caching, page/range/query modes
+- **Full-text search** — disk-based grep across notes and PDF search cache
+- **Image-based PDF reading** — dual content per page (extracted text + JPEG image), book page navigation, PDF outline/bookmarks
 - **Read-only mode** — `--read-only` flag hides all write tools
 - **Path security** — symlink resolution, traversal prevention, extension allowlists
 - **Audit log** — every operation logged to `.secondbrain-mcp/audit.log`
@@ -129,7 +129,7 @@ claude mcp list
 ├── INSTRUCTIONS.md     <- Optional: custom rules for the AI (see below)
 ├── .git/               <- Auto-created on first run
 ├── .trash/             <- Soft-deleted notes land here
-└── .secondbrain-mcp/   <- Audit log + PDF text cache
+└── .secondbrain-mcp/   <- Audit log + lightweight search cache
 ```
 
 Only `notes/` and `references/` need to exist. Everything else is auto-created on first startup.
@@ -152,7 +152,7 @@ Only `notes/` and `references/` need to exist. Everything else is auto-created o
 | `read_note` | Read a note's full content |
 | `list_notes` | List notes, filter by directory or tag |
 | `get_note_metadata` | Title, tags, word count, links |
-| `search_notes` | Full-text search with TF-IDF ranking |
+| `search_notes` | Full-text grep search across all notes |
 | `create_note` | Create with auto-generated frontmatter |
 | `update_note` | Replace or append mode |
 | `delete_note` | Soft-delete to `.trash/` |
@@ -162,7 +162,7 @@ Only `notes/` and `references/` need to exist. Everything else is auto-created o
 | Tool | Description |
 |------|-------------|
 | `list_references` | List all PDFs with metadata |
-| `read_reference` | Extract text by page, range, or query |
+| `read_reference` | Read pages as text + JPEG images, with page/range/query/book_page modes |
 | `search_references` | Full-text search across all PDFs |
 | `get_reference_metadata` | PDF metadata without reading content |
 
@@ -199,10 +199,19 @@ The server appends the file contents to its default instructions during startup.
 ## Security
 
 - **Path traversal prevention** — all paths validated through `PathValidator` with symlink resolution
-- **No arbitrary shell execution** — only `/usr/bin/git` with programmatic argument arrays
+- **No arbitrary shell execution** — only `/usr/bin/git` and `/usr/bin/grep` with programmatic argument arrays
 - **Structural write boundaries** — `ReferenceManager` has zero write methods by design
 - **Soft deletes only** — files are never permanently deleted
 - **Commit message sanitization** — shell metacharacters stripped from git messages
+
+## Documentation
+
+| File | Description |
+|------|-------------|
+| [USAGE-GUIDE.md](USAGE-GUIDE.md) | Full usage guide, tool reference, third-party app compatibility |
+| [BUILD-GUIDE.md](BUILD-GUIDE.md) | Phase-by-phase build journal with design decisions |
+| [SETUP-SCRIPT.md](SETUP-SCRIPT.md) | Setup script docs and machine transfer guide |
+| [SecondBrainMCP-Spec.md](SecondBrainMCP-Spec.md) | Project specification (source of truth) |
 
 ## Architecture
 
@@ -214,21 +223,22 @@ Sources/SecondBrainMCP/
 ├── Core/
 │   ├── PathValidator.swift       # Path security (struct, static)
 │   ├── VaultManager.swift        # Note I/O (actor)
-│   ├── ReferenceManager.swift    # PDF ops, zero write methods (actor)
-│   ├── SearchEngine.swift        # TF-IDF full-text index (actor)
+│   ├── ReferenceManager.swift    # PDF ops, zero write methods (Sendable struct)
+│   ├── PDFPageRenderer.swift     # PDF page JPEG rendering + outline extraction (struct, static)
+│   ├── PDFTextExtractor.swift    # PDFKit text extraction + search (struct, static)
+│   ├── ReferenceCache.swift      # Lightweight search cache (enum, pure namespace)
+│   ├── SearchEngine.swift        # Disk-based grep search (Sendable struct)
 │   ├── GitManager.swift          # Git via /usr/bin/git (actor)
-│   ├── MarkdownParser.swift      # YAML frontmatter (struct, static)
-│   ├── PDFTextExtractor.swift    # PDFKit wrapper (struct, static)
-│   └── ReferenceCache.swift      # Per-page text cache (actor)
+│   └── MarkdownParser.swift      # YAML frontmatter (struct, static)
 └── Logging/AuditLogger.swift     # Operation log (actor)
 ```
 
-**Concurrency model:** Actors for mutable state (file I/O, search index, git), structs with static methods for stateless logic (path validation, PDF extraction, Markdown parsing). Swift 6.2 strict concurrency — no data races by construction.
+**Concurrency model:** Actors for mutable state (VaultManager, GitManager, AuditLogger), Sendable structs for stateless I/O (ReferenceManager, SearchEngine), structs with static methods for pure logic (PathValidator, PDFPageRenderer, PDFTextExtractor, MarkdownParser), enum namespace for cache operations (ReferenceCache). Swift 6.2 strict concurrency — no data races by construction.
 
 ## Tests
 
 ```bash
-swift test                            # Run all 70 tests
+swift test                            # Run all 74 tests
 swift test --filter PathValidatorTests # Run specific suite
 ```
 
@@ -238,4 +248,4 @@ swift test --filter PathValidatorTests # Run specific suite
 | GitManager | 8 | Init, commit, log, sanitization |
 | MarkdownParser (4 suites) | 16 | Frontmatter, links, generation |
 | VaultManager | 10 | Read, list, filter, metadata |
-| SearchEngine | 12 | TF-IDF, ranking, incremental updates |
+| SearchEngine | 12 | Disk-based grep, snippet generation |
