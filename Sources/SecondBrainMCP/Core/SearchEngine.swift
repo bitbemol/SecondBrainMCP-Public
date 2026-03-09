@@ -208,6 +208,8 @@ struct SearchEngine: Sendable {
 
     /// Run /usr/bin/grep to find files containing a pattern.
     /// Kills the process after `timeoutSeconds` to prevent hangs from corrupted directories.
+    /// 15s is sufficient for vaults up to low-thousands of PDFs. If legitimate searches
+    /// approach this limit, replace grep with SQLite FTS5.
     private func grepFiles(
         directory: String,
         pattern: String,
