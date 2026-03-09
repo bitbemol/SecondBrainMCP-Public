@@ -7,11 +7,10 @@ actor AuditLogger {
     private let logPath: String
 
     init(vaultPath: String) {
-        let dir = vaultPath + "/.secondbrain-mcp"
-        self.logPath = dir + "/audit.log"
+        self.logPath = DataPaths.auditLog(vaultPath: vaultPath)
 
         // Ensure directory exists
-        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        DataPaths.ensureRootExists(vaultPath: vaultPath)
     }
 
     enum Operation: String {

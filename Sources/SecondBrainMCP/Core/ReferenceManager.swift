@@ -4,7 +4,7 @@ import Darwin
 
 /// Read-only manager for PDF references. Sendable struct — no mutable state,
 /// no actor serialization. Multiple `readReference()` calls run concurrently without blocking.
-/// Cache writes go to .secondbrain-mcp/cache/ (internal, not user content).
+/// Cache writes go to ~/Library/Application Support/SecondBrainMCP/ (outside iCloud).
 ///
 /// ## Design (image-based)
 /// - `readReference()` renders PDF pages as JPEG images via PDFPageRenderer.
@@ -292,9 +292,8 @@ struct ReferenceManager: Sendable {
         }
 
         // Acquire extraction lock — only one server instance caches at a time
-        let lockDir = vaultPath + "/.secondbrain-mcp"
-        try? FileManager.default.createDirectory(atPath: lockDir, withIntermediateDirectories: true)
-        let lockPath = lockDir + "/extraction.lock"
+        DataPaths.ensureRootExists(vaultPath: vaultPath)
+        let lockPath = DataPaths.extractionLock(vaultPath: vaultPath)
         let lockFd = open(lockPath, O_CREAT | O_WRONLY, 0o644)
 
         if lockFd < 0 || flock(lockFd, LOCK_EX | LOCK_NB) != 0 {
@@ -373,7 +372,7 @@ struct ReferenceManager: Sendable {
             return [:]
         }
 
-        // Cache for next time (writes to .secondbrain-mcp/cache/, not references/)
+        // Cache for next time (writes to ~/Library/Application Support/SecondBrainMCP/)
         let dir = ReferenceCache.cacheDirectory(forPDF: relativePath, vaultPath: vaultPath)
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let entries = labels.map { ReferenceCache.PageLabelEntry(index: $0.key, label: $0.value) }

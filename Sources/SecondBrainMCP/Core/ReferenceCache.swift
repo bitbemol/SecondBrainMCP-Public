@@ -1,12 +1,14 @@
 import Foundation
-import CryptoKit
 
 /// Pure functions for reading/writing the lightweight PDF reference cache.
 /// No instances, no mutable state — just static methods operating on the filesystem.
 ///
+/// Cache lives outside the vault at `~/Library/Application Support/SecondBrainMCP/<vault-hash>/cache/references/`
+/// to avoid iCloud sync conflicts. See `DataPaths` for path resolution.
+///
 /// Cache structure per PDF:
 /// ```
-/// .secondbrain-mcp/cache/references/<sha256-hash>/
+/// <cache-root>/<sha256-hash>/
 /// ├── path.txt            # PDF relative path (e.g. "references/book.pdf")
 /// ├── metadata.json       # CacheMetadata: title, author, totalPages, searchStrategy
 /// ├── page_labels.json    # Page label mapping (only if non-trivial labels exist)
@@ -142,24 +144,15 @@ enum ReferenceCache {
         return contents.contains { $0.hasPrefix("page_") && $0.hasSuffix(".txt") && $0 != "page_labels.json" }
     }
 
-    // MARK: - Paths
+    // MARK: - Paths (delegated to DataPaths)
 
     /// Returns the cache directory path for a specific PDF.
     static func cacheDirectory(forPDF relativePath: String, vaultPath: String) -> String {
-        let hash = hashPath(relativePath)
-        return vaultPath + "/.secondbrain-mcp/cache/references/" + hash
-    }
-
-    /// SHA256 hash of a path string (first 16 bytes as hex).
-    static func hashPath(_ path: String) -> String {
-        let data = Data(path.utf8)
-        let hash = SHA256.hash(data: data)
-        return hash.prefix(16).map { String(format: "%02x", $0) }.joined()
+        DataPaths.cacheDirectory(forPDF: relativePath, vaultPath: vaultPath)
     }
 
     /// Ensure the cache root directory exists.
     static func ensureCacheRootExists(vaultPath: String) {
-        let cacheRoot = vaultPath + "/.secondbrain-mcp/cache/references"
-        try? FileManager.default.createDirectory(atPath: cacheRoot, withIntermediateDirectories: true)
+        DataPaths.ensureCacheRootExists(vaultPath: vaultPath)
     }
 }

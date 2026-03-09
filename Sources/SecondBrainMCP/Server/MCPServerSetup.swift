@@ -12,6 +12,10 @@ import MCP
 struct MCPServerSetup {
 
     static func start(config: ServerConfig, gitManager: GitManager) async throws {
+        // Migrate internal data (cache, logs, locks) from vault to ~/Library/Application Support/
+        // so iCloud doesn't create corrupted duplicate directories.
+        DataPaths.migrateFromVaultIfNeeded(vaultPath: config.vaultPath)
+
         let customInstructions = Self.loadCustomInstructions(vaultPath: config.vaultPath)
         let server = Server(
             name: "SecondBrainMCP",

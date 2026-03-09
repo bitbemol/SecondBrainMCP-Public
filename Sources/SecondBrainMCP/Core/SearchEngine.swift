@@ -5,7 +5,7 @@ import Foundation
 ///
 /// ## Architecture
 /// - `searchNotes()`: greps `.md` files in `notes/` via `/usr/bin/grep`
-/// - `searchReferences()`: greps cached `.txt` files in `.secondbrain-mcp/cache/references/`
+/// - `searchReferences()`: greps cached `.txt` files in `~/Library/Application Support/SecondBrainMCP/`
 /// - Each cache directory contains `path.txt` (PDF relative path) and `metadata.json` (title, author)
 ///   written by `ReferenceManager.ensureCacheExists()` — enables O(1) path and title resolution per hit
 /// - Sendable struct: no mutable state, no actor needed, safe for concurrent use
@@ -79,7 +79,8 @@ struct SearchEngine: Sendable {
 
     // MARK: - Reference Search
 
-    /// Search references by grepping cached text files in `.secondbrain-mcp/cache/references/`.
+    /// Search references by grepping cached text files.
+    /// Cache lives at ~/Library/Application Support/SecondBrainMCP/ (outside iCloud).
     /// New format: greps `search_text.txt` (one per PDF, contains TOC or full text).
     /// Legacy format: also matches `page_*.txt` files from old cache.
     func searchReferences(
@@ -87,7 +88,7 @@ struct SearchEngine: Sendable {
         maxResults: Int = 10,
         maxPerDocument: Int = 3
     ) -> [SearchResult] {
-        let cacheDir = vaultPath + "/.secondbrain-mcp/cache/references"
+        let cacheDir = DataPaths.cacheRoot(vaultPath: vaultPath)
         guard FileManager.default.fileExists(atPath: cacheDir) else { return [] }
 
         let terms = tokenize(query)
@@ -206,10 +207,12 @@ struct SearchEngine: Sendable {
     // MARK: - Private: Grep
 
     /// Run /usr/bin/grep to find files containing a pattern.
+    /// Kills the process after `timeoutSeconds` to prevent hangs from corrupted directories.
     private func grepFiles(
         directory: String,
         pattern: String,
-        fileExtensions: [String]
+        fileExtensions: [String],
+        timeoutSeconds: Double = 15
     ) -> [String] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/grep")
@@ -234,7 +237,24 @@ struct SearchEngine: Sendable {
             return []
         }
 
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        // Read output with timeout — kill grep if it hangs on corrupted dirs
+        let deadline = DispatchTime.now() + timeoutSeconds
+        let semaphore = DispatchSemaphore(value: 0)
+
+        // nonisolated(unsafe) suppresses the Sendable capture warning —
+        // the semaphore guarantees the mutation completes before we read.
+        nonisolated(unsafe) var data = Data()
+        DispatchQueue.global().async {
+            data = pipe.fileHandleForReading.readDataToEndOfFile()
+            semaphore.signal()
+        }
+
+        if semaphore.wait(timeout: deadline) == .timedOut {
+            process.terminate()
+            fputs("SecondBrainMCP: WARNING: grep timed out after \(Int(timeoutSeconds))s searching \(directory)\n", stderr)
+            return []
+        }
+
         process.waitUntilExit()
 
         guard let output = String(data: data, encoding: .utf8), !output.isEmpty else {
