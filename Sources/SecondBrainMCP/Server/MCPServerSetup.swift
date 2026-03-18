@@ -293,6 +293,66 @@ struct MCPServerSetup {
             ))
 
             tools.append(Tool(
+                name: "move_note",
+                description: "Move/rename a note within notes/. Preserves git history. Cannot overwrite existing notes.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "source": .object([
+                            "type": .string("string"),
+                            "description": .string("Current relative path (e.g. notes/ideas/ml-stuff.md)")
+                        ]),
+                        "destination": .object([
+                            "type": .string("string"),
+                            "description": .string("New relative path (e.g. notes/projects/machine-learning.md)")
+                        ])
+                    ]),
+                    "required": .array([.string("source"), .string("destination")])
+                ]),
+                annotations: .init(
+                    readOnlyHint: false,
+                    destructiveHint: false,
+                    idempotentHint: false,
+                    openWorldHint: false
+                )
+            ))
+
+            tools.append(Tool(
+                name: "move_notes",
+                description: "Batch move/rename multiple notes atomically. All-or-nothing: validates all moves first, rolls back on failure. Max 20 moves per call.",
+                inputSchema: .object([
+                    "type": .string("object"),
+                    "properties": .object([
+                        "moves": .object([
+                            "type": .string("array"),
+                            "items": .object([
+                                "type": .string("object"),
+                                "properties": .object([
+                                    "source": .object([
+                                        "type": .string("string"),
+                                        "description": .string("Current relative path")
+                                    ]),
+                                    "destination": .object([
+                                        "type": .string("string"),
+                                        "description": .string("New relative path")
+                                    ])
+                                ]),
+                                "required": .array([.string("source"), .string("destination")])
+                            ]),
+                            "description": .string("Array of {source, destination} pairs. Maximum 20 moves per call.")
+                        ])
+                    ]),
+                    "required": .array([.string("moves")])
+                ]),
+                annotations: .init(
+                    readOnlyHint: false,
+                    destructiveHint: false,
+                    idempotentHint: false,
+                    openWorldHint: false
+                )
+            ))
+
+            tools.append(Tool(
                 name: "delete_note",
                 description: "Soft-delete a note by moving it to .trash/ (recoverable)",
                 inputSchema: .object([
@@ -476,6 +536,8 @@ struct MCPServerSetup {
         case "search_notes": .search
         case "create_note": .create
         case "update_note": .update
+        case "move_note": .move
+        case "move_notes": .move
         case "delete_note": .delete
         case "note_history": .read
         case "revert_note": .update
@@ -505,6 +567,10 @@ struct MCPServerSetup {
             return try await handleCreateNote(params: params, vaultManager: vaultManager, gitManager: gitManager)
         case "update_note":
             return try await handleUpdateNote(params: params, vaultManager: vaultManager, gitManager: gitManager)
+        case "move_note":
+            return try await handleMoveNote(params: params, vaultManager: vaultManager, gitManager: gitManager, auditLogger: auditLogger)
+        case "move_notes":
+            return try await handleMoveNotes(params: params, vaultManager: vaultManager, gitManager: gitManager, auditLogger: auditLogger)
         case "delete_note":
             return try await handleDeleteNote(params: params, vaultManager: vaultManager, gitManager: gitManager)
         // Git tools
@@ -779,6 +845,95 @@ struct MCPServerSetup {
             return CallTool.Result(
                 content: [.text(result)]
             )
+        } catch {
+            return CallTool.Result(
+                content: [.text("Error: \(error)")],
+                isError: true
+            )
+        }
+    }
+
+    // MARK: - Move Handlers
+
+    private static func handleMoveNote(
+        params: CallTool.Parameters,
+        vaultManager: VaultManager,
+        gitManager: GitManager?,
+        auditLogger: AuditLogger
+    ) async throws -> CallTool.Result {
+        guard let source = params.arguments?["source"]?.stringValue,
+              let destination = params.arguments?["destination"]?.stringValue else {
+            return CallTool.Result(
+                content: [.text("Missing required parameters: source, destination")],
+                isError: true
+            )
+        }
+
+        do {
+            let result = try await vaultManager.moveNote(source: source, destination: destination)
+
+            // Git commit
+            if let git = gitManager {
+                try? await git.commitMoves(
+                    moves: [(source: source, destination: destination)],
+                    message: "[SecondBrainMCP] Moved: \(source) to \(destination)"
+                )
+            }
+
+            await auditLogger.log(operation: .move, path: source, details: "-> \(destination)")
+
+            return CallTool.Result(content: [.text(result)])
+        } catch {
+            return CallTool.Result(
+                content: [.text("Error: \(error)")],
+                isError: true
+            )
+        }
+    }
+
+    private static func handleMoveNotes(
+        params: CallTool.Parameters,
+        vaultManager: VaultManager,
+        gitManager: GitManager?,
+        auditLogger: AuditLogger
+    ) async throws -> CallTool.Result {
+        guard let movesArray = params.arguments?["moves"]?.arrayValue else {
+            return CallTool.Result(
+                content: [.text("Missing required parameter: moves (array of {source, destination})")],
+                isError: true
+            )
+        }
+
+        // Parse the moves array
+        var moves: [VaultManager.MoveOperation] = []
+        for (index, item) in movesArray.enumerated() {
+            guard let source = item.objectValue?["source"]?.stringValue,
+                  let destination = item.objectValue?["destination"]?.stringValue else {
+                return CallTool.Result(
+                    content: [.text("Move at index \(index) missing source or destination")],
+                    isError: true
+                )
+            }
+            moves.append(VaultManager.MoveOperation(source: source, destination: destination))
+        }
+
+        do {
+            let result = try await vaultManager.moveNotes(moves: moves)
+
+            // Single git commit for the whole batch
+            if let git = gitManager {
+                let gitMoves = moves.map { (source: $0.source, destination: $0.destination) }
+                try? await git.commitMoves(
+                    moves: gitMoves,
+                    message: "[SecondBrainMCP] Moved \(moves.count) notes"
+                )
+            }
+
+            for move in moves {
+                await auditLogger.log(operation: .move, path: move.source, details: "-> \(move.destination)")
+            }
+
+            return CallTool.Result(content: [.text(result)])
         } catch {
             return CallTool.Result(
                 content: [.text("Error: \(error)")],

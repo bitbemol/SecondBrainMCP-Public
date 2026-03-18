@@ -14,7 +14,7 @@ Claude Code CLI ─┘                |
 
 ## Features
 
-- **14 MCP tools** — search, read, create, update, delete notes; search and read PDFs; git history and revert
+- **16 MCP tools** — search, read, create, update, move, delete notes; search and read PDFs; git history and revert
 - **4 MCP resources** — vault index, recent notes, tags summary, references index
 - **Git auto-commit** — every write creates a commit with `[SecondBrainMCP]` prefix
 - **Soft deletes** — deleted notes move to `.trash/`, never permanently removed
@@ -155,6 +155,8 @@ Only `notes/` and `references/` need to exist. Everything else is auto-created o
 | `search_notes` | Full-text grep search across all notes |
 | `create_note` | Create with auto-generated frontmatter |
 | `update_note` | Replace or append mode |
+| `move_note` | Move/rename a note within notes/, preserves git history |
+| `move_notes` | Batch move up to 20 notes atomically (all-or-nothing) |
 | `delete_note` | Soft-delete to `.trash/` |
 
 ### References (read-only)
@@ -238,7 +240,7 @@ Sources/SecondBrainMCP/
 ## Tests
 
 ```bash
-swift test                            # Run all 74 tests
+swift test                            # Run all 92 tests
 swift test --filter PathValidatorTests # Run specific suite
 ```
 
@@ -247,5 +249,9 @@ swift test --filter PathValidatorTests # Run specific suite
 | PathValidator (4 suites) | 24 | Traversal attacks, symlinks, edge cases |
 | GitManager | 8 | Init, commit, log, sanitization |
 | MarkdownParser (4 suites) | 16 | Frontmatter, links, generation |
-| VaultManager | 10 | Read, list, filter, metadata |
-| SearchEngine | 12 | Disk-based grep, snippet generation |
+| VaultManager (2 suites) | 28 | Read, list, filter, metadata, move, batch move |
+| SearchEngine | 16 | Disk-based grep, snippet generation, reference search |
+
+## License
+
+MIT

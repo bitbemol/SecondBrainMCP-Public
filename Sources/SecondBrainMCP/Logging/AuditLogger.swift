@@ -18,6 +18,7 @@ actor AuditLogger {
         case create = "CREATE"
         case update = "UPDATE"
         case delete = "DELETE"
+        case move = "MOVE"
         case search = "SEARCH"
         case readRef = "READ_REF"
         case searchRef = "SEARCH_REF"

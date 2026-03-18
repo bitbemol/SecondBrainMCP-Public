@@ -47,9 +47,8 @@ struct SearchEngineTests {
         try FileManager.default.createDirectory(atPath: pdfDir, withIntermediateDirectories: true)
         try Data().write(to: URL(fileURLWithPath: fullPDFPath))
 
-        // Create cache directory
-        let hash = ReferenceCache.hashPath(pdfRelativePath)
-        let cacheDir = vaultPath + "/.secondbrain-mcp/cache/references/" + hash
+        // Create cache directory using DataPaths (~/Library/Application Support/SecondBrainMCP/)
+        let cacheDir = DataPaths.cacheDirectory(forPDF: pdfRelativePath, vaultPath: vaultPath)
         try FileManager.default.createDirectory(atPath: cacheDir, withIntermediateDirectories: true)
 
         // Write path.txt (required for SearchEngine hash → path resolution)

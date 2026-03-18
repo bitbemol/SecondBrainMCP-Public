@@ -62,6 +62,23 @@ actor GitManager {
         try await run(["commit", "-m", sanitized])
     }
 
+    /// Stage moved files (deletion at source, addition at destination) and commit.
+    /// Uses `git add -A` on source parent dirs to handle case-insensitive filesystem.
+    func commitMoves(moves: [(source: String, destination: String)], message: String) async throws {
+        guard !moves.isEmpty else { return }
+
+        for move in moves {
+            // Stage the deletion at the old location
+            let sourceParent = (move.source as NSString).deletingLastPathComponent
+            try await run(["add", "-A", "--", sourceParent.isEmpty ? "." : sourceParent])
+            // Stage the new file at the destination
+            try await run(["add", "--", move.destination])
+        }
+
+        let sanitized = Self.sanitizeCommitMessage(message)
+        try await run(["commit", "-m", sanitized])
+    }
+
     /// Get log entries for a specific file.
     func log(forFile file: String, maxEntries: Int = 10) async throws -> [LogEntry] {
         let output = try await run([
