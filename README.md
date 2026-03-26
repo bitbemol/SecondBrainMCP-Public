@@ -14,7 +14,7 @@ Claude Code CLI ─┘                |
 
 ## Features
 
-- **16 MCP tools** — search, read, create, update, move, delete notes; search and read PDFs; git history and revert
+- **17 MCP tools** — search, read (single & batch), create, update, move, delete notes; search and read PDFs; git history and revert
 - **4 MCP resources** — vault index, recent notes, tags summary, references index
 - **Git auto-commit** — every write creates a commit with `[SecondBrainMCP]` prefix
 - **Soft deletes** — deleted notes move to `.trash/`, never permanently removed
@@ -150,6 +150,7 @@ Only `notes/` and `references/` need to exist. Everything else is auto-created o
 | Tool | Description |
 |------|-------------|
 | `read_note` | Read a note's full content |
+| `read_notes` | Read up to 20 notes in one call, with summary index and per-note error reporting |
 | `list_notes` | List notes, filter by directory or tag |
 | `get_note_metadata` | Title, tags, word count, links |
 | `search_notes` | Full-text grep search across all notes |

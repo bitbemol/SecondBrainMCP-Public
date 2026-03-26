@@ -55,9 +55,14 @@ struct ReferenceManager: Sendable {
     /// List all PDF files in the reference library.
     /// Reads metadata from disk cache (metadata.json) when available.
     /// Falls back to PDFKit `lightMetadata()` for uncached PDFs.
-    func listReferences(directory: String? = nil) -> [ReferenceInfo] {
+    func listReferences(directory: String? = nil) throws -> [ReferenceInfo] {
         let baseDir: String
         if let directory {
+            // directory is a subdirectory name within references/ (e.g. "Papers", "Kodeco")
+            // Reject anything that tries to escape references/
+            guard !directory.contains("..") else {
+                throw ReferenceError.invalidPath("Directory must not contain path traversal: \(directory)")
+            }
             baseDir = referencesDir + "/" + directory
         } else {
             baseDir = referencesDir
@@ -137,6 +142,10 @@ struct ReferenceManager: Sendable {
         query: String? = nil,
         maxPages: Int = 5
     ) throws -> ReferenceContent {
+        guard relativePath.hasPrefix("references/") else {
+            throw ReferenceError.invalidPath("Path must be within references/: \(relativePath)")
+        }
+
         let resolved = try PathValidator.resolve(
             relativePath: relativePath,
             root: vaultPath,
@@ -206,6 +215,10 @@ struct ReferenceManager: Sendable {
 
     /// Get metadata about a specific PDF. Uses lightMetadata to avoid text extraction.
     func getMetadata(relativePath: String) throws -> ReferenceMetadata {
+        guard relativePath.hasPrefix("references/") else {
+            throw ReferenceError.invalidPath("Path must be within references/: \(relativePath)")
+        }
+
         let resolved = try PathValidator.resolve(
             relativePath: relativePath,
             root: vaultPath,
@@ -345,11 +358,14 @@ struct ReferenceManager: Sendable {
 
     enum ReferenceError: Error, CustomStringConvertible {
         case cannotOpenPDF(String)
+        case invalidPath(String)
 
         var description: String {
             switch self {
             case .cannotOpenPDF(let path):
                 return "Cannot open PDF: \(path)"
+            case .invalidPath(let reason):
+                return "Invalid path: \(reason)"
             }
         }
     }

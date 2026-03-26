@@ -156,6 +156,31 @@ struct MCPServerSetup {
             )
         ))
 
+        // Cap at 20 notes per call. No per-note size limit — we trust users won't write
+        // Don Quixote-length markdown files. Notes are typically small; the LLM's context
+        // window is the natural backstop if someone goes wild.
+        tools.append(Tool(
+            name: "read_notes",
+            description: "Read multiple notes in a single call. Returns content for each note, with errors reported individually. If more than 20 paths are provided, only the first 20 are read and the remaining paths are listed so you can request them in a follow-up call.",
+            inputSchema: .object([
+                "type": .string("object"),
+                "properties": .object([
+                    "paths": .object([
+                        "type": .string("array"),
+                        "items": .object(["type": .string("string")]),
+                        "description": .string("Array of relative paths (e.g. [\"notes/foo.md\", \"notes/bar.md\"]). Maximum 20 per call.")
+                    ])
+                ]),
+                "required": .array([.string("paths")])
+            ]),
+            annotations: .init(
+                readOnlyHint: true,
+                destructiveHint: false,
+                idempotentHint: true,
+                openWorldHint: false
+            )
+        ))
+
         tools.append(Tool(
             name: "list_notes",
             description: "List all notes in the vault, optionally filtered by directory or tag",
@@ -531,6 +556,7 @@ struct MCPServerSetup {
         // Audit log every tool call
         let auditOp: AuditLogger.Operation? = switch params.name {
         case "read_note": .read
+        case "read_notes": .read
         case "list_notes": .read
         case "get_note_metadata": .read
         case "search_notes": .search
@@ -557,6 +583,8 @@ struct MCPServerSetup {
         // Note tools
         case "read_note":
             return try await handleReadNote(params: params, vaultManager: vaultManager)
+        case "read_notes":
+            return try await handleReadNotes(params: params, vaultManager: vaultManager)
         case "list_notes":
             return try await handleListNotes(params: params, vaultManager: vaultManager)
         case "get_note_metadata":
@@ -621,6 +649,105 @@ struct MCPServerSetup {
                 isError: true
             )
         }
+    }
+
+    private static func handleReadNotes(
+        params: CallTool.Parameters,
+        vaultManager: VaultManager
+    ) async throws -> CallTool.Result {
+        guard let pathValues = params.arguments?["paths"]?.arrayValue, !pathValues.isEmpty else {
+            return CallTool.Result(
+                content: [.text("Missing required parameter: paths (non-empty array of strings)")],
+                isError: true
+            )
+        }
+
+        let allPaths = pathValues.compactMap(\.stringValue)
+        guard !allPaths.isEmpty else {
+            return CallTool.Result(
+                content: [.text("paths must contain at least one string")],
+                isError: true
+            )
+        }
+
+        let maxNotes = 20
+        let pathsToRead = Array(allPaths.prefix(maxNotes))
+        let skippedPaths = allPaths.count > maxNotes ? Array(allPaths.suffix(from: maxNotes)) : []
+
+        // First pass: read all notes, collecting results and metadata for the index
+        struct NoteResult {
+            let path: String
+            let title: String
+            let wordCount: Int
+            let content: String
+            let error: String?
+        }
+
+        var results: [NoteResult] = []
+
+        for path in pathsToRead {
+            do {
+                let note = try await vaultManager.readNote(relativePath: path)
+                let wordCount = note.metadata.bodyContent
+                    .split(whereSeparator: { $0.isWhitespace || $0.isNewline })
+                    .count
+                results.append(NoteResult(
+                    path: path,
+                    title: note.metadata.title,
+                    wordCount: wordCount,
+                    content: note.content,
+                    error: nil
+                ))
+            } catch {
+                results.append(NoteResult(
+                    path: path,
+                    title: "",
+                    wordCount: 0,
+                    content: "",
+                    error: "\(error)"
+                ))
+            }
+        }
+
+        let successCount = results.filter { $0.error == nil }.count
+
+        // Build summary index — lets the LLM triage before reading full content
+        var index: [String] = []
+        let totalLabel = allPaths.count > maxNotes
+            ? "Read \(successCount) of \(allPaths.count) notes:"
+            : "Read \(successCount) of \(results.count) notes:"
+        index.append(totalLabel)
+
+        for (i, note) in results.enumerated() {
+            if let error = note.error {
+                index.append("\(i + 1). \(note.path) — ⚠ \(error)")
+            } else {
+                index.append("\(i + 1). \(note.path) — \"\(note.title)\" (\(note.wordCount) words)")
+            }
+        }
+
+        if !skippedPaths.isEmpty {
+            index.append("")
+            index.append("Remaining \(skippedPaths.count) notes not read:")
+            for path in skippedPaths {
+                index.append("  - \(path)")
+            }
+        }
+
+        // Build full output: index + content sections
+        var output = index.joined(separator: "\n")
+
+        for note in results {
+            if let error = note.error {
+                output += "\n\n--- \(note.path) ---\n⚠ Error: \(error)"
+            } else {
+                output += "\n\n--- \(note.path) ---\n\(note.content)"
+            }
+        }
+
+        return CallTool.Result(
+            content: [.text(output)]
+        )
     }
 
     private static func handleListNotes(
@@ -955,6 +1082,10 @@ struct MCPServerSetup {
             return CallTool.Result(content: [.text("Missing required parameter: path")], isError: true)
         }
 
+        guard path.hasPrefix("notes/") else {
+            return CallTool.Result(content: [.text("Path must be within notes/: \(path)")], isError: true)
+        }
+
         let maxEntries = params.arguments?["max_entries"]?.intValue ?? 10
 
         do {
@@ -986,6 +1117,10 @@ struct MCPServerSetup {
         guard let path = params.arguments?["path"]?.stringValue,
               let commit = params.arguments?["commit"]?.stringValue else {
             return CallTool.Result(content: [.text("Missing required parameters: path, commit")], isError: true)
+        }
+
+        guard path.hasPrefix("notes/") else {
+            return CallTool.Result(content: [.text("Path must be within notes/: \(path)")], isError: true)
         }
 
         do {
@@ -1042,7 +1177,13 @@ struct MCPServerSetup {
         referenceManager: ReferenceManager
     ) -> CallTool.Result {
         let directory = params.arguments?["directory"]?.stringValue
-        let refs = referenceManager.listReferences(directory: directory)
+
+        let refs: [ReferenceManager.ReferenceInfo]
+        do {
+            refs = try referenceManager.listReferences(directory: directory)
+        } catch {
+            return CallTool.Result(content: [.text("Error: \(error)")], isError: true)
+        }
 
         if refs.isEmpty {
             return CallTool.Result(content: [.text("No PDF references found.")])
@@ -1278,7 +1419,7 @@ struct MCPServerSetup {
     private static func handleReferencesResource(
         referenceManager: ReferenceManager
     ) -> ReadResource.Result {
-        let refs = referenceManager.listReferences()
+        let refs = (try? referenceManager.listReferences()) ?? []
 
         let entries: [[String: Any]] = refs.map { ref in
             var entry: [String: Any] = [

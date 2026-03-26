@@ -12,6 +12,7 @@ actor VaultManager {
         case directoryNotFound(String)
         case readFailed(String, underlying: String)
         case invalidMove(String)
+        case invalidPath(String)
 
         var description: String {
             switch self {
@@ -25,6 +26,8 @@ actor VaultManager {
                 return "Failed to read \(path): \(underlying)"
             case .invalidMove(let reason):
                 return "Invalid move: \(reason)"
+            case .invalidPath(let reason):
+                return "Invalid path: \(reason)"
             }
         }
     }
@@ -66,6 +69,10 @@ actor VaultManager {
 
     /// Read a note's full content and parsed metadata.
     func readNote(relativePath: String) throws -> NoteContent {
+        guard relativePath.hasPrefix("notes/") else {
+            throw VaultError.invalidPath("Path must be within notes/: \(relativePath)")
+        }
+
         let resolved = try PathValidator.resolve(
             relativePath: relativePath,
             root: config.vaultPath,
@@ -101,6 +108,9 @@ actor VaultManager {
     ) throws -> [NoteInfo] {
         let baseDir: String
         if let directory {
+            guard directory.hasPrefix("notes/") || directory == "notes" else {
+                throw VaultError.invalidPath("Directory must be within notes/: \(directory)")
+            }
             baseDir = try PathValidator.resolve(relativePath: directory, root: config.vaultPath)
         } else {
             baseDir = config.vaultPath + "/notes"
@@ -169,6 +179,10 @@ actor VaultManager {
 
     /// Get metadata for a specific note without returning full content.
     func getNoteMetadata(relativePath: String) throws -> NoteMetadataResult {
+        guard relativePath.hasPrefix("notes/") else {
+            throw VaultError.invalidPath("Path must be within notes/: \(relativePath)")
+        }
+
         let resolved = try PathValidator.resolve(
             relativePath: relativePath,
             root: config.vaultPath,
@@ -206,6 +220,10 @@ actor VaultManager {
 
     /// Create a new note. Auto-generates frontmatter if content doesn't include it.
     func createNote(relativePath: String, content: String, tags: [String] = []) throws -> String {
+        guard relativePath.hasPrefix("notes/") else {
+            throw VaultError.invalidPath("Path must be within notes/: \(relativePath)")
+        }
+
         let resolved = try PathValidator.resolve(
             relativePath: relativePath,
             root: config.vaultPath,
@@ -235,6 +253,10 @@ actor VaultManager {
 
     /// Update an existing note. Mode: "replace" (default) or "append".
     func updateNote(relativePath: String, content: String, mode: String = "replace") throws -> String {
+        guard relativePath.hasPrefix("notes/") else {
+            throw VaultError.invalidPath("Path must be within notes/: \(relativePath)")
+        }
+
         let resolved = try PathValidator.resolve(
             relativePath: relativePath,
             root: config.vaultPath,
@@ -462,6 +484,10 @@ actor VaultManager {
 
     /// Soft-delete a note by moving it to .trash/.
     func deleteNote(relativePath: String) throws -> String {
+        guard relativePath.hasPrefix("notes/") else {
+            throw VaultError.invalidPath("Path must be within notes/: \(relativePath)")
+        }
+
         let resolved = try PathValidator.resolve(
             relativePath: relativePath,
             root: config.vaultPath,

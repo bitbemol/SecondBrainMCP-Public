@@ -85,7 +85,8 @@ struct VaultManagerReadTests {
         let (_, config) = try makeTestVault()
         let vault = VaultManager(config: config)
 
-        await #expect(throws: PathValidator.PathError.self) {
+        // Path traversal is now caught by the notes/ prefix guard before PathValidator
+        await #expect(throws: VaultManager.VaultError.self) {
             try await vault.readNote(relativePath: "../../../etc/passwd")
         }
     }
@@ -409,5 +410,368 @@ struct VaultManagerMoveTests {
         // Source should still be at original location (validation failed before execution)
         #expect(FileManager.default.fileExists(atPath: root + "/notes/ideas/ml-stuff.md"))
         #expect(!FileManager.default.fileExists(atPath: root + "/notes/projects/ml.md"))
+    }
+}
+
+// MARK: - Boundary Enforcement Tests
+//
+// Security invariant: all note operations MUST only access notes/.
+// All reference operations MUST only access references/.
+// These tests document and enforce that boundary for every operation.
+
+@Suite("VaultManager — Note Boundary Enforcement")
+struct VaultManagerNoteBoundaryTests {
+
+    private func makeTestVault() throws -> (String, ServerConfig) {
+        let root = NSTemporaryDirectory() + "VaultBoundaryTests-\(UUID().uuidString)"
+        let fm = FileManager.default
+        try fm.createDirectory(atPath: root + "/notes/projects", withIntermediateDirectories: true)
+        try fm.createDirectory(atPath: root + "/references", withIntermediateDirectories: true)
+
+        try """
+        ---
+        title: Existing Note
+        tags: [test]
+        ---
+
+        Some content.
+        """.write(toFile: root + "/notes/projects/existing.md", atomically: true, encoding: .utf8)
+
+        // Create a file outside notes/ to prove reads are blocked
+        try "# Outside Notes".write(
+            toFile: root + "/references/sneaky.md", atomically: true, encoding: .utf8
+        )
+        try "# Vault Root File".write(
+            toFile: root + "/root-file.md", atomically: true, encoding: .utf8
+        )
+
+        let config = try ServerConfig.parse(arguments: ["binary", "--vault", root])
+        return (root, config)
+    }
+
+    // MARK: - read_note
+
+    @Test("read_note within notes/ succeeds")
+    func readNoteInside() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        let note = try await vault.readNote(relativePath: "notes/projects/existing.md")
+        #expect(note.content.contains("Some content"))
+    }
+
+    @Test("read_note outside notes/ is rejected")
+    func readNoteOutside() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.readNote(relativePath: "references/sneaky.md")
+        }
+    }
+
+    @Test("read_note at vault root is rejected")
+    func readNoteAtRoot() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.readNote(relativePath: "root-file.md")
+        }
+    }
+
+    @Test("read_note with arbitrary path is rejected")
+    func readNoteArbitraryPath() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.readNote(relativePath: "apps/Xcode/something.md")
+        }
+    }
+
+    // MARK: - list_notes
+
+    @Test("list_notes with no directory succeeds (defaults to notes/)")
+    func listNotesDefault() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        let notes = try await vault.listNotes()
+        #expect(!notes.isEmpty)
+    }
+
+    @Test("list_notes scoped to notes/ subdirectory succeeds")
+    func listNotesSubdir() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        let notes = try await vault.listNotes(directory: "notes/projects")
+        #expect(!notes.isEmpty)
+    }
+
+    @Test("list_notes scoped to 'notes' (no trailing slash) succeeds")
+    func listNotesExact() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        let notes = try await vault.listNotes(directory: "notes")
+        #expect(!notes.isEmpty)
+    }
+
+    @Test("list_notes scoped to references/ is rejected")
+    func listNotesReferences() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.listNotes(directory: "references")
+        }
+    }
+
+    @Test("list_notes scoped to arbitrary directory is rejected")
+    func listNotesArbitraryDir() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.listNotes(directory: "apps/Xcode")
+        }
+    }
+
+    // MARK: - get_note_metadata
+
+    @Test("get_note_metadata within notes/ succeeds")
+    func getMetadataInside() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        let meta = try await vault.getNoteMetadata(relativePath: "notes/projects/existing.md")
+        #expect(meta.title == "Existing Note")
+    }
+
+    @Test("get_note_metadata outside notes/ is rejected")
+    func getMetadataOutside() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.getNoteMetadata(relativePath: "references/sneaky.md")
+        }
+    }
+
+    @Test("get_note_metadata at vault root is rejected")
+    func getMetadataAtRoot() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.getNoteMetadata(relativePath: "root-file.md")
+        }
+    }
+
+    // MARK: - create_note
+
+    @Test("create_note within notes/ succeeds")
+    func createNoteInside() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        let result = try await vault.createNote(relativePath: "notes/new.md", content: "# New")
+        #expect(result.contains("Created"))
+    }
+
+    @Test("create_note outside notes/ is rejected")
+    func createNoteOutside() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.createNote(relativePath: "apps/Xcode/foo.md", content: "# Foo")
+        }
+    }
+
+    @Test("create_note in references/ is rejected")
+    func createNoteInReferences() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.createNote(relativePath: "references/sneaky.md", content: "# Nope")
+        }
+    }
+
+    @Test("create_note at vault root is rejected")
+    func createNoteAtRoot() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.createNote(relativePath: "root-level.md", content: "# Root")
+        }
+    }
+
+    // MARK: - update_note
+
+    @Test("update_note within notes/ succeeds")
+    func updateNoteInside() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        let result = try await vault.updateNote(
+            relativePath: "notes/projects/existing.md", content: "# Updated"
+        )
+        #expect(result.contains("Updated"))
+    }
+
+    @Test("update_note outside notes/ is rejected")
+    func updateNoteOutside() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.updateNote(relativePath: "apps/Xcode/foo.md", content: "# Foo")
+        }
+    }
+
+    @Test("update_note in references/ is rejected")
+    func updateNoteInReferences() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.updateNote(relativePath: "references/sneaky.md", content: "# Nope")
+        }
+    }
+
+    // MARK: - delete_note
+
+    @Test("delete_note within notes/ succeeds")
+    func deleteNoteInside() async throws {
+        let (root, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        let result = try await vault.deleteNote(relativePath: "notes/projects/existing.md")
+        #expect(result.contains("Deleted"))
+        #expect(!FileManager.default.fileExists(atPath: root + "/notes/projects/existing.md"))
+    }
+
+    @Test("delete_note outside notes/ is rejected")
+    func deleteNoteOutside() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.deleteNote(relativePath: "references/sneaky.md")
+        }
+    }
+
+    @Test("delete_note at vault root is rejected")
+    func deleteNoteAtRoot() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.deleteNote(relativePath: "root-file.md")
+        }
+    }
+}
+
+@Suite("ReferenceManager — Reference Boundary Enforcement")
+struct ReferenceManagerBoundaryTests {
+
+    private func makeTestVault() throws -> (String, ReferenceManager) {
+        let root = NSTemporaryDirectory() + "RefBoundaryTests-\(UUID().uuidString)"
+        let fm = FileManager.default
+        try fm.createDirectory(atPath: root + "/notes", withIntermediateDirectories: true)
+        try fm.createDirectory(atPath: root + "/references/Papers", withIntermediateDirectories: true)
+
+        return (root, ReferenceManager(vaultPath: root))
+    }
+
+    // MARK: - list_references
+
+    @Test("list_references with no directory succeeds")
+    func listReferencesDefault() throws {
+        let (_, refManager) = try makeTestVault()
+
+        // Returns empty (no PDFs in test vault), but doesn't throw
+        let refs = try refManager.listReferences()
+        #expect(refs.isEmpty)
+    }
+
+    @Test("list_references scoped to subdirectory succeeds")
+    func listReferencesSubdir() throws {
+        let (_, refManager) = try makeTestVault()
+
+        let refs = try refManager.listReferences(directory: "Papers")
+        #expect(refs.isEmpty)
+    }
+
+    @Test("list_references with path traversal is rejected")
+    func listReferencesTraversal() throws {
+        let (_, refManager) = try makeTestVault()
+
+        #expect(throws: ReferenceManager.ReferenceError.self) {
+            try refManager.listReferences(directory: "../notes")
+        }
+    }
+
+    @Test("list_references with nested traversal is rejected")
+    func listReferencesNestedTraversal() throws {
+        let (_, refManager) = try makeTestVault()
+
+        #expect(throws: ReferenceManager.ReferenceError.self) {
+            try refManager.listReferences(directory: "Papers/../../notes")
+        }
+    }
+
+    // MARK: - read_reference
+
+    @Test("read_reference outside references/ is rejected")
+    func readReferenceOutside() throws {
+        let (_, refManager) = try makeTestVault()
+
+        #expect(throws: ReferenceManager.ReferenceError.self) {
+            try refManager.readReference(relativePath: "notes/something.pdf")
+        }
+    }
+
+    @Test("read_reference at vault root is rejected")
+    func readReferenceAtRoot() throws {
+        let (_, refManager) = try makeTestVault()
+
+        #expect(throws: ReferenceManager.ReferenceError.self) {
+            try refManager.readReference(relativePath: "some-file.pdf")
+        }
+    }
+
+    @Test("read_reference with arbitrary path is rejected")
+    func readReferenceArbitraryPath() throws {
+        let (_, refManager) = try makeTestVault()
+
+        #expect(throws: ReferenceManager.ReferenceError.self) {
+            try refManager.readReference(relativePath: "apps/secret.pdf")
+        }
+    }
+
+    // MARK: - get_reference_metadata
+
+    @Test("get_reference_metadata outside references/ is rejected")
+    func getMetadataOutside() throws {
+        let (_, refManager) = try makeTestVault()
+
+        #expect(throws: ReferenceManager.ReferenceError.self) {
+            try refManager.getMetadata(relativePath: "notes/something.pdf")
+        }
+    }
+
+    @Test("get_reference_metadata at vault root is rejected")
+    func getMetadataAtRoot() throws {
+        let (_, refManager) = try makeTestVault()
+
+        #expect(throws: ReferenceManager.ReferenceError.self) {
+            try refManager.getMetadata(relativePath: "root.pdf")
+        }
     }
 }
