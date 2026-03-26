@@ -11,7 +11,7 @@ let package = Package(
         .executable(name: "second-brain-mcp", targets: ["SecondBrainMCP"])
     ],
     dependencies: [
-        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.11.0")
+        .package(url: "https://github.com/modelcontextprotocol/swift-sdk.git", from: "0.12.0")
     ],
     targets: [
         .executableTarget(

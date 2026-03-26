@@ -619,7 +619,7 @@ struct MCPServerSetup {
             return handleGetReferenceMetadata(params: params, referenceManager: referenceManager)
         default:
             return CallTool.Result(
-                content: [.text("Unknown tool: \(params.name)")],
+                content: [.text(text: "Unknown tool: \(params.name)", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -633,7 +633,7 @@ struct MCPServerSetup {
     ) async throws -> CallTool.Result {
         guard let path = params.arguments?["path"]?.stringValue else {
             return CallTool.Result(
-                content: [.text("Missing required parameter: path")],
+                content: [.text(text: "Missing required parameter: path", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -641,11 +641,11 @@ struct MCPServerSetup {
         do {
             let note = try await vaultManager.readNote(relativePath: path)
             return CallTool.Result(
-                content: [.text(note.content)]
+                content: [.text(text: note.content, annotations: nil, _meta: nil)]
             )
         } catch {
             return CallTool.Result(
-                content: [.text("Error: \(error)")],
+                content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -657,7 +657,7 @@ struct MCPServerSetup {
     ) async throws -> CallTool.Result {
         guard let pathValues = params.arguments?["paths"]?.arrayValue, !pathValues.isEmpty else {
             return CallTool.Result(
-                content: [.text("Missing required parameter: paths (non-empty array of strings)")],
+                content: [.text(text: "Missing required parameter: paths (non-empty array of strings)", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -665,7 +665,7 @@ struct MCPServerSetup {
         let allPaths = pathValues.compactMap(\.stringValue)
         guard !allPaths.isEmpty else {
             return CallTool.Result(
-                content: [.text("paths must contain at least one string")],
+                content: [.text(text: "paths must contain at least one string", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -746,7 +746,7 @@ struct MCPServerSetup {
         }
 
         return CallTool.Result(
-            content: [.text(output)]
+            content: [.text(text: output, annotations: nil, _meta: nil)]
         )
     }
 
@@ -767,7 +767,7 @@ struct MCPServerSetup {
 
             if notes.isEmpty {
                 return CallTool.Result(
-                    content: [.text("No notes found.")]
+                    content: [.text(text: "No notes found.", annotations: nil, _meta: nil)]
                 )
             }
 
@@ -782,11 +782,11 @@ struct MCPServerSetup {
             }
 
             return CallTool.Result(
-                content: [.text(lines.joined(separator: "\n"))]
+                content: [.text(text: lines.joined(separator: "\n"), annotations: nil, _meta: nil)]
             )
         } catch {
             return CallTool.Result(
-                content: [.text("Error: \(error)")],
+                content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -798,7 +798,7 @@ struct MCPServerSetup {
     ) async throws -> CallTool.Result {
         guard let path = params.arguments?["path"]?.stringValue else {
             return CallTool.Result(
-                content: [.text("Missing required parameter: path")],
+                content: [.text(text: "Missing required parameter: path", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -821,11 +821,11 @@ struct MCPServerSetup {
             }
 
             return CallTool.Result(
-                content: [.text(info.joined(separator: "\n"))]
+                content: [.text(text: info.joined(separator: "\n"), annotations: nil, _meta: nil)]
             )
         } catch {
             return CallTool.Result(
-                content: [.text("Error: \(error)")],
+                content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -839,7 +839,7 @@ struct MCPServerSetup {
     ) -> CallTool.Result {
         guard let query = params.arguments?["query"]?.stringValue, !query.isEmpty else {
             return CallTool.Result(
-                content: [.text("Missing required parameter: query")],
+                content: [.text(text: "Missing required parameter: query", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -852,7 +852,7 @@ struct MCPServerSetup {
         )
 
         if results.isEmpty {
-            return CallTool.Result(content: [.text("No notes found matching '\(query)'.")])
+            return CallTool.Result(content: [.text(text: "No notes found matching '\(query)'.", annotations: nil, _meta: nil)])
         }
 
         var lines: [String] = ["Found \(results.count) result(s) for '\(query)':", ""]
@@ -864,7 +864,7 @@ struct MCPServerSetup {
         }
 
         return CallTool.Result(
-            content: [.text(lines.joined(separator: "\n"))]
+            content: [.text(text: lines.joined(separator: "\n"), annotations: nil, _meta: nil)]
         )
     }
 
@@ -878,7 +878,7 @@ struct MCPServerSetup {
         guard let path = params.arguments?["path"]?.stringValue,
               let content = params.arguments?["content"]?.stringValue else {
             return CallTool.Result(
-                content: [.text("Missing required parameters: path, content")],
+                content: [.text(text: "Missing required parameters: path, content", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -898,11 +898,11 @@ struct MCPServerSetup {
             }
 
             return CallTool.Result(
-                content: [.text(result)]
+                content: [.text(text: result, annotations: nil, _meta: nil)]
             )
         } catch {
             return CallTool.Result(
-                content: [.text("Error: \(error)")],
+                content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -916,7 +916,7 @@ struct MCPServerSetup {
         guard let path = params.arguments?["path"]?.stringValue,
               let content = params.arguments?["content"]?.stringValue else {
             return CallTool.Result(
-                content: [.text("Missing required parameters: path, content")],
+                content: [.text(text: "Missing required parameters: path, content", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -936,11 +936,11 @@ struct MCPServerSetup {
             }
 
             return CallTool.Result(
-                content: [.text(result)]
+                content: [.text(text: result, annotations: nil, _meta: nil)]
             )
         } catch {
             return CallTool.Result(
-                content: [.text("Error: \(error)")],
+                content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -953,7 +953,7 @@ struct MCPServerSetup {
     ) async throws -> CallTool.Result {
         guard let path = params.arguments?["path"]?.stringValue else {
             return CallTool.Result(
-                content: [.text("Missing required parameter: path")],
+                content: [.text(text: "Missing required parameter: path", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -970,11 +970,11 @@ struct MCPServerSetup {
             }
 
             return CallTool.Result(
-                content: [.text(result)]
+                content: [.text(text: result, annotations: nil, _meta: nil)]
             )
         } catch {
             return CallTool.Result(
-                content: [.text("Error: \(error)")],
+                content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -991,7 +991,7 @@ struct MCPServerSetup {
         guard let source = params.arguments?["source"]?.stringValue,
               let destination = params.arguments?["destination"]?.stringValue else {
             return CallTool.Result(
-                content: [.text("Missing required parameters: source, destination")],
+                content: [.text(text: "Missing required parameters: source, destination", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -1009,10 +1009,10 @@ struct MCPServerSetup {
 
             await auditLogger.log(operation: .move, path: source, details: "-> \(destination)")
 
-            return CallTool.Result(content: [.text(result)])
+            return CallTool.Result(content: [.text(text: result, annotations: nil, _meta: nil)])
         } catch {
             return CallTool.Result(
-                content: [.text("Error: \(error)")],
+                content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -1026,7 +1026,7 @@ struct MCPServerSetup {
     ) async throws -> CallTool.Result {
         guard let movesArray = params.arguments?["moves"]?.arrayValue else {
             return CallTool.Result(
-                content: [.text("Missing required parameter: moves (array of {source, destination})")],
+                content: [.text(text: "Missing required parameter: moves (array of {source, destination})", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -1037,7 +1037,7 @@ struct MCPServerSetup {
             guard let source = item.objectValue?["source"]?.stringValue,
                   let destination = item.objectValue?["destination"]?.stringValue else {
                 return CallTool.Result(
-                    content: [.text("Move at index \(index) missing source or destination")],
+                    content: [.text(text: "Move at index \(index) missing source or destination", annotations: nil, _meta: nil)],
                     isError: true
                 )
             }
@@ -1060,10 +1060,10 @@ struct MCPServerSetup {
                 await auditLogger.log(operation: .move, path: move.source, details: "-> \(move.destination)")
             }
 
-            return CallTool.Result(content: [.text(result)])
+            return CallTool.Result(content: [.text(text: result, annotations: nil, _meta: nil)])
         } catch {
             return CallTool.Result(
-                content: [.text("Error: \(error)")],
+                content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -1076,14 +1076,14 @@ struct MCPServerSetup {
         gitManager: GitManager?
     ) async -> CallTool.Result {
         guard let git = gitManager else {
-            return CallTool.Result(content: [.text("Git not available")], isError: true)
+            return CallTool.Result(content: [.text(text: "Git not available", annotations: nil, _meta: nil)], isError: true)
         }
         guard let path = params.arguments?["path"]?.stringValue else {
-            return CallTool.Result(content: [.text("Missing required parameter: path")], isError: true)
+            return CallTool.Result(content: [.text(text: "Missing required parameter: path", annotations: nil, _meta: nil)], isError: true)
         }
 
         guard path.hasPrefix("notes/") else {
-            return CallTool.Result(content: [.text("Path must be within notes/: \(path)")], isError: true)
+            return CallTool.Result(content: [.text(text: "Path must be within notes/: \(path)", annotations: nil, _meta: nil)], isError: true)
         }
 
         let maxEntries = params.arguments?["max_entries"]?.intValue ?? 10
@@ -1091,7 +1091,7 @@ struct MCPServerSetup {
         do {
             let entries = try await git.log(forFile: path, maxEntries: maxEntries)
             if entries.isEmpty {
-                return CallTool.Result(content: [.text("No history found for \(path)")])
+                return CallTool.Result(content: [.text(text: "No history found for \(path)", annotations: nil, _meta: nil)])
             }
 
             var lines: [String] = ["History for `\(path)` (\(entries.count) entries):", ""]
@@ -1100,9 +1100,9 @@ struct MCPServerSetup {
                 lines.append("  Commit: `\(entry.hash.prefix(8))` | Date: \(entry.date)")
             }
 
-            return CallTool.Result(content: [.text(lines.joined(separator: "\n"))])
+            return CallTool.Result(content: [.text(text: lines.joined(separator: "\n"), annotations: nil, _meta: nil)])
         } catch {
-            return CallTool.Result(content: [.text("Error: \(error)")], isError: true)
+            return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
         }
     }
 
@@ -1112,15 +1112,15 @@ struct MCPServerSetup {
         gitManager: GitManager?
     ) async throws -> CallTool.Result {
         guard let git = gitManager else {
-            return CallTool.Result(content: [.text("Git not available")], isError: true)
+            return CallTool.Result(content: [.text(text: "Git not available", annotations: nil, _meta: nil)], isError: true)
         }
         guard let path = params.arguments?["path"]?.stringValue,
               let commit = params.arguments?["commit"]?.stringValue else {
-            return CallTool.Result(content: [.text("Missing required parameters: path, commit")], isError: true)
+            return CallTool.Result(content: [.text(text: "Missing required parameters: path, commit", annotations: nil, _meta: nil)], isError: true)
         }
 
         guard path.hasPrefix("notes/") else {
-            return CallTool.Result(content: [.text("Path must be within notes/: \(path)")], isError: true)
+            return CallTool.Result(content: [.text(text: "Path must be within notes/: \(path)", annotations: nil, _meta: nil)], isError: true)
         }
 
         do {
@@ -1134,10 +1134,10 @@ struct MCPServerSetup {
             )
 
             return CallTool.Result(
-                content: [.text("Reverted `\(path)` to commit `\(String(commit.prefix(8)))` and created new commit.")]
+                content: [.text(text: "Reverted `\(path)` to commit `\(String(commit.prefix(8)))` and created new commit.", annotations: nil, _meta: nil)]
             )
         } catch {
-            return CallTool.Result(content: [.text("Error: \(error)")], isError: true)
+            return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
         }
     }
 
@@ -1146,7 +1146,7 @@ struct MCPServerSetup {
         gitManager: GitManager?
     ) async -> CallTool.Result {
         guard let git = gitManager else {
-            return CallTool.Result(content: [.text("Git not available")], isError: true)
+            return CallTool.Result(content: [.text(text: "Git not available", annotations: nil, _meta: nil)], isError: true)
         }
 
         let maxEntries = params.arguments?["max_entries"]?.intValue ?? 20
@@ -1155,7 +1155,7 @@ struct MCPServerSetup {
         do {
             let entries = try await git.log(maxEntries: maxEntries, since: since)
             if entries.isEmpty {
-                return CallTool.Result(content: [.text("No changes found.")])
+                return CallTool.Result(content: [.text(text: "No changes found.", annotations: nil, _meta: nil)])
             }
 
             var lines: [String] = ["Vault changelog (\(entries.count) entries):", ""]
@@ -1164,9 +1164,9 @@ struct MCPServerSetup {
                 lines.append("  Commit: `\(entry.hash.prefix(8))` | Date: \(entry.date)")
             }
 
-            return CallTool.Result(content: [.text(lines.joined(separator: "\n"))])
+            return CallTool.Result(content: [.text(text: lines.joined(separator: "\n"), annotations: nil, _meta: nil)])
         } catch {
-            return CallTool.Result(content: [.text("Error: \(error)")], isError: true)
+            return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
         }
     }
 
@@ -1182,11 +1182,11 @@ struct MCPServerSetup {
         do {
             refs = try referenceManager.listReferences(directory: directory)
         } catch {
-            return CallTool.Result(content: [.text("Error: \(error)")], isError: true)
+            return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
         }
 
         if refs.isEmpty {
-            return CallTool.Result(content: [.text("No PDF references found.")])
+            return CallTool.Result(content: [.text(text: "No PDF references found.", annotations: nil, _meta: nil)])
         }
 
         var lines: [String] = ["Found \(refs.count) reference(s):", ""]
@@ -1196,7 +1196,7 @@ struct MCPServerSetup {
             lines.append("  Path: `\(ref.relativePath)` | Pages: \(ref.pageCount) | Size: \(String(format: "%.1f", ref.fileSizeMB)) MB")
         }
 
-        return CallTool.Result(content: [.text(lines.joined(separator: "\n"))])
+        return CallTool.Result(content: [.text(text: lines.joined(separator: "\n"), annotations: nil, _meta: nil)])
     }
 
     private static func handleReadReference(
@@ -1204,7 +1204,7 @@ struct MCPServerSetup {
         referenceManager: ReferenceManager
     ) async -> CallTool.Result {
         guard let path = params.arguments?["path"]?.stringValue else {
-            return CallTool.Result(content: [.text("Missing required parameter: path")], isError: true)
+            return CallTool.Result(content: [.text(text: "Missing required parameter: path", annotations: nil, _meta: nil)], isError: true)
         }
 
         let page = params.arguments?["page"]?.intValue
@@ -1237,25 +1237,25 @@ struct MCPServerSetup {
             }
 
             if result.renderedPages.isEmpty {
-                return CallTool.Result(content: [.text("No pages rendered from \(path). The page may not exist.")])
+                return CallTool.Result(content: [.text(text: "No pages rendered from \(path). The page may not exist.", annotations: nil, _meta: nil)])
             }
 
             // Build mixed content: text + JPEG images per page
             // Claude uses text for accurate reading, images for diagrams/equations/figures
             var content: [Tool.Content] = []
-            content.append(.text("\(result.title) (\(result.totalPages) pages total)"))
+            content.append(.text(text: "\(result.title) (\(result.totalPages) pages total)", annotations: nil, _meta: nil))
 
             for p in result.renderedPages {
                 let labelInfo = p.bookLabel.map { " (book page: \($0))" } ?? ""
-                content.append(.text("--- PDF Page \(p.pageNumber)\(labelInfo) ---"))
+                content.append(.text(text: "--- PDF Page \(p.pageNumber)\(labelInfo) ---", annotations: nil, _meta: nil))
 
                 // Include extracted text first (fast, accurate for Claude to process)
                 if let text = p.extractedText {
-                    content.append(.text(text))
+                    content.append(.text(text: text, annotations: nil, _meta: nil))
                 }
 
                 // Always include the image (for diagrams, figures, equations, formatting)
-                content.append(.image(data: p.jpegData.base64EncodedString(), mimeType: "image/jpeg", metadata: nil))
+                content.append(.image(data: p.jpegData.base64EncodedString(), mimeType: "image/jpeg", annotations: nil, _meta: nil))
             }
 
             // Include PDF outline (bookmarks/TOC) if available — structured chapter navigation
@@ -1266,7 +1266,7 @@ struct MCPServerSetup {
                     return "\(prefix)- \(entry.title) (page \(entry.pageNumber))"
                 }
                 let truncated = outline.count > 50 ? "\n  ... (\(outline.count - 50) more entries)" : ""
-                content.append(.text("## Table of Contents (from PDF bookmarks)\n" + tocLines.joined(separator: "\n") + truncated))
+                content.append(.text(text: "## Table of Contents (from PDF bookmarks)\n" + tocLines.joined(separator: "\n") + truncated, annotations: nil, _meta: nil))
             }
 
             // Include page label info if available and useful
@@ -1275,12 +1275,12 @@ struct MCPServerSetup {
                     .prefix(5)
                     .map { "PDF page \($0.key) = book page \($0.value)" }
                     .joined(separator: ", ")
-                content.append(.text("Page labels: \(labelSample)\(result.pageLabels.count > 5 ? "..." : "")"))
+                content.append(.text(text: "Page labels: \(labelSample)\(result.pageLabels.count > 5 ? "..." : "")", annotations: nil, _meta: nil))
             }
 
             return CallTool.Result(content: content)
         } catch {
-            return CallTool.Result(content: [.text("Error: \(error)")], isError: true)
+            return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
         }
     }
 
@@ -1289,7 +1289,7 @@ struct MCPServerSetup {
         searchEngine: SearchEngine
     ) -> CallTool.Result {
         guard let query = params.arguments?["query"]?.stringValue else {
-            return CallTool.Result(content: [.text("Missing required parameter: query")], isError: true)
+            return CallTool.Result(content: [.text(text: "Missing required parameter: query", annotations: nil, _meta: nil)], isError: true)
         }
 
         let maxResults = params.arguments?["max_results"]?.intValue ?? 10
@@ -1302,7 +1302,7 @@ struct MCPServerSetup {
         )
 
         if results.isEmpty {
-            return CallTool.Result(content: [.text("No references found matching '\(query)'.")])
+            return CallTool.Result(content: [.text(text: "No references found matching '\(query)'.", annotations: nil, _meta: nil)])
         }
 
         var lines: [String] = ["Found \(results.count) result(s) for '\(query)':", ""]
@@ -1314,7 +1314,7 @@ struct MCPServerSetup {
             lines.append("")
         }
 
-        return CallTool.Result(content: [.text(lines.joined(separator: "\n"))])
+        return CallTool.Result(content: [.text(text: lines.joined(separator: "\n"), annotations: nil, _meta: nil)])
     }
 
     private static func handleGetReferenceMetadata(
@@ -1322,7 +1322,7 @@ struct MCPServerSetup {
         referenceManager: ReferenceManager
     ) -> CallTool.Result {
         guard let path = params.arguments?["path"]?.stringValue else {
-            return CallTool.Result(content: [.text("Missing required parameter: path")], isError: true)
+            return CallTool.Result(content: [.text(text: "Missing required parameter: path", annotations: nil, _meta: nil)], isError: true)
         }
 
         do {
@@ -1339,9 +1339,9 @@ struct MCPServerSetup {
                 "Page labels: \(meta.hasPageLabels ? "Yes (book page numbers available via book_page parameter)" : "No")"
             ]
 
-            return CallTool.Result(content: [.text(info.joined(separator: "\n"))])
+            return CallTool.Result(content: [.text(text: info.joined(separator: "\n"), annotations: nil, _meta: nil)])
         } catch {
-            return CallTool.Result(content: [.text("Error: \(error)")], isError: true)
+            return CallTool.Result(content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)], isError: true)
         }
     }
 
