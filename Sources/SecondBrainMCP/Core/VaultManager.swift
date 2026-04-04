@@ -13,6 +13,7 @@ actor VaultManager {
         case readFailed(String, underlying: String)
         case invalidMove(String)
         case invalidPath(String)
+        case patchFailed(String)
 
         var description: String {
             switch self {
@@ -28,8 +29,15 @@ actor VaultManager {
                 return "Invalid move: \(reason)"
             case .invalidPath(let reason):
                 return "Invalid path: \(reason)"
+            case .patchFailed(let reason):
+                return "Patch failed: \(reason)"
             }
         }
+    }
+
+    struct PatchOperation: Sendable {
+        let oldText: String
+        let newText: String
     }
 
     struct MoveOperation: Sendable {
@@ -276,6 +284,73 @@ actor VaultManager {
         }
 
         return "Updated: \(relativePath) (mode: \(mode))"
+    }
+
+    /// Surgically edit specific parts of a note via find-and-replace patches.
+    /// Each patch's oldText must appear exactly once. Patches are applied sequentially
+    /// to an in-memory copy — the file is only written if all patches succeed.
+    func patchNote(relativePath: String, patches: [PatchOperation]) throws -> String {
+        guard relativePath.hasPrefix("notes/") else {
+            throw VaultError.invalidPath("Path must be within notes/: \(relativePath)")
+        }
+
+        let resolved = try PathValidator.resolve(
+            relativePath: relativePath,
+            root: config.vaultPath,
+            allowedExtensions: config.allowedExtensions
+        )
+
+        guard FileManager.default.fileExists(atPath: resolved) else {
+            throw VaultError.noteNotFound(relativePath)
+        }
+
+        let content = try String(contentsOfFile: resolved, encoding: .utf8)
+
+        guard !patches.isEmpty else {
+            throw VaultError.patchFailed("No patches provided")
+        }
+        guard patches.count <= 20 else {
+            throw VaultError.patchFailed("Too many patches: \(patches.count). Maximum is 20.")
+        }
+
+        var working = content
+        var appliedCount = 0
+
+        for (i, patch) in patches.enumerated() {
+            if patch.oldText == patch.newText { continue }
+
+            // Count occurrences
+            var count = 0
+            var searchStart = working.startIndex
+            while let range = working.range(of: patch.oldText, range: searchStart..<working.endIndex) {
+                count += 1
+                searchStart = range.upperBound
+            }
+
+            if count == 0 {
+                throw VaultError.patchFailed(
+                    "Patch \(i + 1): text not found: \"\(patch.oldText.prefix(100))\""
+                )
+            }
+            if count > 1 {
+                throw VaultError.patchFailed(
+                    "Patch \(i + 1): ambiguous — found \(count) occurrences of: \"\(patch.oldText.prefix(100))\". Provide more surrounding context to make it unique."
+                )
+            }
+
+            guard let range = working.range(of: patch.oldText) else {
+                throw VaultError.patchFailed("Patch \(i + 1): text not found: \"\(patch.oldText.prefix(100))\"")
+            }
+            working.replaceSubrange(range, with: patch.newText)
+            appliedCount += 1
+        }
+
+        if appliedCount == 0 {
+            return "No changes: all patches were no-ops"
+        }
+
+        try working.write(toFile: resolved, atomically: true, encoding: .utf8)
+        return "Patched: \(relativePath) (\(appliedCount) patch(es) applied)"
     }
 
     // MARK: - Move Operations

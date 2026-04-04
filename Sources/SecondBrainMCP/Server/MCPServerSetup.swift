@@ -289,7 +289,20 @@ struct MCPServerSetup {
 
             tools.append(Tool(
                 name: "update_note",
-                description: "Update an existing note. Supports full replace or append mode.",
+                description: """
+                    Update an existing note. Three modes: \
+                    "replace" overwrites the ENTIRE note — only for small notes or complete rewrites. \
+                    "append" adds content to the end. \
+                    "patch" surgical find-and-replace edits — always use patch for notes longer than ~10 lines \
+                    unless doing a full rewrite. \
+                    Patch workflow: first read_note to get current content, then send patches with exact text \
+                    from what you read. Include 2-3 surrounding lines in old_text if the target text is not \
+                    unique (e.g. a common word or repeated pattern). Empty new_text deletes the matched text. \
+                    Patches are applied sequentially and atomically — if any fail, nothing changes. \
+                    Example — update a status and remove a TODO item: \
+                    patches: [{"old_text": "## Status\\nIn progress", "new_text": "## Status\\nCompleted"}, \
+                    {"old_text": "- Fix login bug\\n", "new_text": ""}]
+                    """,
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -299,15 +312,33 @@ struct MCPServerSetup {
                         ]),
                         "content": .object([
                             "type": .string("string"),
-                            "description": .string("New content")
+                            "description": .string("New content (required for replace and append modes, ignored for patch mode)")
                         ]),
                         "mode": .object([
                             "type": .string("string"),
-                            "enum": .array([.string("replace"), .string("append")]),
-                            "description": .string("replace (default) or append")
+                            "enum": .array([.string("replace"), .string("append"), .string("patch")]),
+                            "description": .string("replace (default), append, or patch")
+                        ]),
+                        "patches": .object([
+                            "type": .string("array"),
+                            "description": .string("Array of {old_text, new_text} patches (required for patch mode). Each old_text must appear exactly once in the note. Empty new_text deletes the matched text. Max 20 patches per call."),
+                            "items": .object([
+                                "type": .string("object"),
+                                "properties": .object([
+                                    "old_text": .object([
+                                        "type": .string("string"),
+                                        "description": .string("Exact text to find (must appear exactly once). Include 2-3 surrounding lines for uniqueness if the text alone could match multiple locations.")
+                                    ]),
+                                    "new_text": .object([
+                                        "type": .string("string"),
+                                        "description": .string("Replacement text (empty string to delete)")
+                                    ])
+                                ]),
+                                "required": .array([.string("old_text"), .string("new_text")])
+                            ])
                         ])
                     ]),
-                    "required": .array([.string("path"), .string("content")])
+                    "required": .array([.string("path")])
                 ]),
                 annotations: .init(
                     readOnlyHint: false,
@@ -913,10 +944,9 @@ struct MCPServerSetup {
         vaultManager: VaultManager,
         gitManager: GitManager?
     ) async throws -> CallTool.Result {
-        guard let path = params.arguments?["path"]?.stringValue,
-              let content = params.arguments?["content"]?.stringValue else {
+        guard let path = params.arguments?["path"]?.stringValue else {
             return CallTool.Result(
-                content: [.text(text: "Missing required parameters: path, content", annotations: nil, _meta: nil)],
+                content: [.text(text: "Missing required parameter: path", annotations: nil, _meta: nil)],
                 isError: true
             )
         }
@@ -924,20 +954,61 @@ struct MCPServerSetup {
         let mode = params.arguments?["mode"]?.stringValue ?? "replace"
 
         do {
-            let result = try await vaultManager.updateNote(relativePath: path, content: content, mode: mode)
+            if mode == "patch" {
+                guard let patchArray = params.arguments?["patches"]?.arrayValue else {
+                    return CallTool.Result(
+                        content: [.text(text: "Missing required parameter: patches (required for patch mode)", annotations: nil, _meta: nil)],
+                        isError: true
+                    )
+                }
 
-            // Git commit
-            if let git = gitManager {
-                let modeStr = mode == "append" ? " (append)" : ""
-                try? await git.commitChange(
-                    files: [path],
-                    message: "[SecondBrainMCP] Updated: \(path)\(modeStr)"
+                var ops: [VaultManager.PatchOperation] = []
+                for (index, item) in patchArray.enumerated() {
+                    guard let dict = item.objectValue,
+                          let oldText = dict["old_text"]?.stringValue,
+                          let newText = dict["new_text"]?.stringValue else {
+                        return CallTool.Result(
+                            content: [.text(text: "Patch at index \(index) missing old_text or new_text", annotations: nil, _meta: nil)],
+                            isError: true
+                        )
+                    }
+                    ops.append(VaultManager.PatchOperation(oldText: oldText, newText: newText))
+                }
+
+                let result = try await vaultManager.patchNote(relativePath: path, patches: ops)
+
+                if let git = gitManager, !result.hasPrefix("No changes") {
+                    try? await git.commitChange(
+                        files: [path],
+                        message: "[SecondBrainMCP] Updated: \(path) (patch)"
+                    )
+                }
+
+                return CallTool.Result(
+                    content: [.text(text: result, annotations: nil, _meta: nil)]
+                )
+            } else {
+                guard let content = params.arguments?["content"]?.stringValue else {
+                    return CallTool.Result(
+                        content: [.text(text: "Missing required parameter: content (required for \(mode) mode)", annotations: nil, _meta: nil)],
+                        isError: true
+                    )
+                }
+
+                let result = try await vaultManager.updateNote(relativePath: path, content: content, mode: mode)
+
+                if let git = gitManager {
+                    let modeStr = mode == "append" ? " (append)" : ""
+                    try? await git.commitChange(
+                        files: [path],
+                        message: "[SecondBrainMCP] Updated: \(path)\(modeStr)"
+                    )
+                }
+
+                return CallTool.Result(
+                    content: [.text(text: result, annotations: nil, _meta: nil)]
                 )
             }
-
-            return CallTool.Result(
-                content: [.text(text: result, annotations: nil, _meta: nil)]
-            )
         } catch {
             return CallTool.Result(
                 content: [.text(text: "Error: \(error)", annotations: nil, _meta: nil)],

@@ -677,6 +677,261 @@ struct VaultManagerNoteBoundaryTests {
     }
 }
 
+@Suite("VaultManager — Patch Operations")
+struct VaultManagerPatchTests {
+
+    private func makeTestVault() throws -> (String, ServerConfig) {
+        let root = NSTemporaryDirectory() + "VaultPatchTests-\(UUID().uuidString)"
+        let fm = FileManager.default
+        try fm.createDirectory(atPath: root + "/notes", withIntermediateDirectories: true)
+        try fm.createDirectory(atPath: root + "/references", withIntermediateDirectories: true)
+
+        let note = """
+        ---
+        title: Project Plan
+        tags: [project, planning]
+        ---
+
+        # Project Plan
+
+        ## Status
+        In progress since March.
+
+        ## Architecture
+        Using MVVM pattern with coordinator navigation.
+
+        ## TODO
+        - Fix the login bug
+        - Add unit tests
+        - Update documentation
+        """
+        try note.write(toFile: root + "/notes/project.md", atomically: true, encoding: .utf8)
+
+        let config = try ServerConfig.parse(arguments: ["binary", "--vault", root])
+        return (root, config)
+    }
+
+    @Test("Single patch replaces text")
+    func singlePatch() async throws {
+        let (root, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        let result = try await vault.patchNote(
+            relativePath: "notes/project.md",
+            patches: [.init(oldText: "In progress since March.", newText: "Completed on 2026-04-03.")]
+        )
+
+        #expect(result.contains("Patched"))
+        let content = try String(contentsOfFile: root + "/notes/project.md", encoding: .utf8)
+        #expect(content.contains("Completed on 2026-04-03."))
+        #expect(!content.contains("In progress since March."))
+    }
+
+    @Test("Multiple patches applied sequentially")
+    func multiplePatches() async throws {
+        let (root, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        let result = try await vault.patchNote(
+            relativePath: "notes/project.md",
+            patches: [
+                .init(oldText: "In progress since March.", newText: "Done."),
+                .init(oldText: "- Fix the login bug\n", newText: "")
+            ]
+        )
+
+        #expect(result.contains("2 patch(es) applied"))
+        let content = try String(contentsOfFile: root + "/notes/project.md", encoding: .utf8)
+        #expect(content.contains("Done."))
+        #expect(!content.contains("Fix the login bug"))
+    }
+
+    @Test("Patch with empty new_text deletes text")
+    func deleteViaPatch() async throws {
+        let (root, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        _ = try await vault.patchNote(
+            relativePath: "notes/project.md",
+            patches: [.init(oldText: "- Fix the login bug\n", newText: "")]
+        )
+
+        let content = try String(contentsOfFile: root + "/notes/project.md", encoding: .utf8)
+        #expect(!content.contains("Fix the login bug"))
+        #expect(content.contains("- Add unit tests"))
+    }
+
+    @Test("Patch inserts after anchor")
+    func insertAfterAnchor() async throws {
+        let (root, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        _ = try await vault.patchNote(
+            relativePath: "notes/project.md",
+            patches: [.init(oldText: "## TODO", newText: "## TODO\n- NEW TASK")]
+        )
+
+        let content = try String(contentsOfFile: root + "/notes/project.md", encoding: .utf8)
+        #expect(content.contains("## TODO\n- NEW TASK"))
+    }
+
+    @Test("Patch not found throws error")
+    func patchNotFound() async throws {
+        let (root, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+        let original = try String(contentsOfFile: root + "/notes/project.md", encoding: .utf8)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.patchNote(
+                relativePath: "notes/project.md",
+                patches: [.init(oldText: "this text does not exist anywhere", newText: "replacement")]
+            )
+        }
+
+        let after = try String(contentsOfFile: root + "/notes/project.md", encoding: .utf8)
+        #expect(after == original)
+    }
+
+    @Test("Ambiguous patch throws error")
+    func ambiguousPatch() async throws {
+        let (root, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        // Write a note with duplicate text
+        let dupeNote = "AAA\nBBB\nAAA\n"
+        try dupeNote.write(toFile: root + "/notes/dupe.md", atomically: true, encoding: .utf8)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.patchNote(
+                relativePath: "notes/dupe.md",
+                patches: [.init(oldText: "AAA", newText: "CCC")]
+            )
+        }
+
+        let after = try String(contentsOfFile: root + "/notes/dupe.md", encoding: .utf8)
+        #expect(after == dupeNote)
+    }
+
+    @Test("Failed patch leaves file unchanged")
+    func failedPatchNoSideEffect() async throws {
+        let (root, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+        let original = try String(contentsOfFile: root + "/notes/project.md", encoding: .utf8)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.patchNote(
+                relativePath: "notes/project.md",
+                patches: [
+                    .init(oldText: "In progress since March.", newText: "Done."),
+                    .init(oldText: "THIS DOES NOT EXIST", newText: "whatever")
+                ]
+            )
+        }
+
+        let after = try String(contentsOfFile: root + "/notes/project.md", encoding: .utf8)
+        #expect(after == original)
+    }
+
+    @Test("No-op patches skip without writing")
+    func noOpPatches() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        let result = try await vault.patchNote(
+            relativePath: "notes/project.md",
+            patches: [
+                .init(oldText: "In progress since March.", newText: "In progress since March."),
+                .init(oldText: "## TODO", newText: "## TODO")
+            ]
+        )
+
+        #expect(result.hasPrefix("No changes"))
+    }
+
+    @Test("Empty patches array throws")
+    func emptyPatches() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.patchNote(relativePath: "notes/project.md", patches: [])
+        }
+    }
+
+    @Test("Exceeding 20 patches throws")
+    func tooManyPatches() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        let patches = (0..<21).map {
+            VaultManager.PatchOperation(oldText: "old\($0)", newText: "new\($0)")
+        }
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.patchNote(relativePath: "notes/project.md", patches: patches)
+        }
+    }
+
+    @Test("Patch outside notes/ is rejected")
+    func patchOutsideNotes() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.patchNote(
+                relativePath: "references/something.md",
+                patches: [.init(oldText: "a", newText: "b")]
+            )
+        }
+    }
+
+    @Test("Patch on nonexistent note throws")
+    func patchNonexistent() async throws {
+        let (_, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        await #expect(throws: VaultManager.VaultError.self) {
+            try await vault.patchNote(
+                relativePath: "notes/ghost.md",
+                patches: [.init(oldText: "a", newText: "b")]
+            )
+        }
+    }
+
+    @Test("Patch modifies frontmatter")
+    func patchFrontmatter() async throws {
+        let (root, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        _ = try await vault.patchNote(
+            relativePath: "notes/project.md",
+            patches: [.init(oldText: "tags: [project, planning]", newText: "tags: [project, planning, completed]")]
+        )
+
+        let content = try String(contentsOfFile: root + "/notes/project.md", encoding: .utf8)
+        #expect(content.contains("tags: [project, planning, completed]"))
+    }
+
+    @Test("Sequential patches see earlier changes")
+    func sequentialVisibility() async throws {
+        let (root, config) = try makeTestVault()
+        let vault = VaultManager(config: config)
+
+        let result = try await vault.patchNote(
+            relativePath: "notes/project.md",
+            patches: [
+                .init(oldText: "MVVM", newText: "VIPER"),
+                .init(oldText: "Using VIPER pattern", newText: "Using VIPER architecture")
+            ]
+        )
+
+        #expect(result.contains("2 patch(es) applied"))
+        let content = try String(contentsOfFile: root + "/notes/project.md", encoding: .utf8)
+        #expect(content.contains("Using VIPER architecture"))
+        #expect(!content.contains("MVVM"))
+    }
+}
+
 @Suite("ReferenceManager — Reference Boundary Enforcement")
 struct ReferenceManagerBoundaryTests {
 
