@@ -137,7 +137,7 @@ struct MCPServerSetup {
 
         tools.append(Tool(
             name: "read_note",
-            description: "Read the full content of a specific note",
+            description: "Read the full Markdown content of a note, including YAML frontmatter. Use get_note_metadata instead if you only need title, tags, or word count without loading the full content.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -161,7 +161,7 @@ struct MCPServerSetup {
         // window is the natural backstop if someone goes wild.
         tools.append(Tool(
             name: "read_notes",
-            description: "Read multiple notes in a single call. Returns content for each note, with errors reported individually. If more than 20 paths are provided, only the first 20 are read and the remaining paths are listed so you can request them in a follow-up call.",
+            description: "Read multiple notes in a single call (max 20). Returns a summary index (title + word count per note) followed by full content. Prefer this over multiple read_note calls when you need 2+ notes. Errors are reported per-note without failing the batch.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -183,7 +183,7 @@ struct MCPServerSetup {
 
         tools.append(Tool(
             name: "list_notes",
-            description: "List all notes in the vault, optionally filtered by directory or tag",
+            description: "List all notes with titles, tags, and modification dates — returns metadata only, not content. Use this to browse or discover notes. Filter by directory to scope to a folder, or by tag to find notes on a topic. Results sorted newest first. For finding notes by content, use search_notes instead.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -197,7 +197,7 @@ struct MCPServerSetup {
                     ]),
                     "tag": .object([
                         "type": .string("string"),
-                        "description": .string("Filter by frontmatter tag")
+                        "description": .string("Filter by YAML frontmatter tag (case-insensitive)")
                     ])
                 ])
             ]),
@@ -211,7 +211,7 @@ struct MCPServerSetup {
 
         tools.append(Tool(
             name: "get_note_metadata",
-            description: "Get structured metadata for a note without reading full content",
+            description: "Get a note's title, tags, created/modified dates, word count, and outgoing links — without loading the full content. Use this to check metadata before deciding whether to read the full note.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -232,13 +232,13 @@ struct MCPServerSetup {
 
         tools.append(Tool(
             name: "search_notes",
-            description: "Full-text search across all notes by content and title",
+            description: "Keyword search across all notes by title and body content. Returns matching notes ranked by relevance with text snippets around matches. This is literal keyword matching — \"ML\" will NOT match \"machine learning\". Try multiple terms or variations if initial results are sparse.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
                     "query": .object([
                         "type": .string("string"),
-                        "description": .string("Search terms")
+                        "description": .string("Search terms (literal keyword match, case-insensitive)")
                     ]),
                     "max_results": .object([
                         "type": .string("integer"),
@@ -259,7 +259,7 @@ struct MCPServerSetup {
         if !config.readOnly {
             tools.append(Tool(
                 name: "create_note",
-                description: "Create a new Markdown note with optional tags. Auto-generates frontmatter.",
+                description: "Create a new note. Path must start with \"notes/\" and must not already exist. YAML frontmatter (title, created date, tags) is auto-generated if the content doesn't include it. Creates parent directories automatically. Git auto-commits.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -350,7 +350,7 @@ struct MCPServerSetup {
 
             tools.append(Tool(
                 name: "move_note",
-                description: "Move/rename a note within notes/. Preserves git history. Cannot overwrite existing notes.",
+                description: "Move or rename a single note within notes/. Creates destination parent directories automatically and cleans up empty source directories. Cannot overwrite an existing note. Supports case-only renames (e.g. Foo.md to foo.md). Git auto-commits.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -375,7 +375,7 @@ struct MCPServerSetup {
 
             tools.append(Tool(
                 name: "move_notes",
-                description: "Batch move/rename multiple notes atomically. All-or-nothing: validates all moves first, rolls back on failure. Max 20 moves per call.",
+                description: "Batch move/rename up to 20 notes in a single atomic operation. Validates ALL moves before executing any — if any is invalid, nothing changes. Rolls back on partial failure. Use this instead of multiple move_note calls when reorganizing. Single git commit for the batch.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -410,7 +410,7 @@ struct MCPServerSetup {
 
             tools.append(Tool(
                 name: "delete_note",
-                description: "Soft-delete a note by moving it to .trash/ (recoverable)",
+                description: "Soft-delete a note by moving it to .trash/ — the file is NOT permanently deleted and can be recovered. Git auto-commits the deletion.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -434,7 +434,7 @@ struct MCPServerSetup {
         if !config.readOnly {
             tools.append(Tool(
                 name: "note_history",
-                description: "Show git commit history for a specific note",
+                description: "Show git commit history for a specific note. Use this to find a commit hash for revert_note, or to review what changed and when. For vault-wide history, use vault_changelog instead.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -459,7 +459,7 @@ struct MCPServerSetup {
 
             tools.append(Tool(
                 name: "revert_note",
-                description: "Revert a note to a previous git commit (creates a new commit)",
+                description: "Revert a note to a previous version. Requires a commit hash — call note_history first to find it. Creates a NEW commit (does not rewrite history), so the current version is preserved in git.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -469,7 +469,7 @@ struct MCPServerSetup {
                         ]),
                         "commit": .object([
                             "type": .string("string"),
-                            "description": .string("Commit hash to revert to")
+                            "description": .string("Commit hash to revert to (get this from note_history)")
                         ])
                     ]),
                     "required": .array([.string("path"), .string("commit")])
@@ -484,7 +484,7 @@ struct MCPServerSetup {
 
             tools.append(Tool(
                 name: "vault_changelog",
-                description: "Show recent changes across the entire vault",
+                description: "Show recent changes across ALL notes in the vault. Use this to answer \"what changed recently?\" questions. For history of one specific note, use note_history instead.",
                 inputSchema: .object([
                     "type": .string("object"),
                     "properties": .object([
@@ -494,7 +494,7 @@ struct MCPServerSetup {
                         ]),
                         "since": .object([
                             "type": .string("string"),
-                            "description": .string("ISO date to filter from (e.g. 2026-02-22)")
+                            "description": .string("Show changes from this date forward (ISO format, e.g. 2026-03-01)")
                         ])
                     ])
                 ]),
@@ -510,7 +510,7 @@ struct MCPServerSetup {
         // -- Reference tools (always read-only) -- Phase 5
         tools.append(Tool(
             name: "list_references",
-            description: "List all PDF files in the reference library",
+            description: "List all PDFs in the reference library with title, author, page count, and file size. Use this to browse available books or find a PDF's exact path for read_reference. Filter by subdirectory (e.g. \"Papers\", \"Kodeco\") to narrow results.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -525,7 +525,16 @@ struct MCPServerSetup {
 
         tools.append(Tool(
             name: "read_reference",
-            description: "Read PDF pages. Returns extracted text (for accurate reading) + JPEG images (for diagrams/figures/equations). Also returns PDF outline (table of contents with chapter names and page numbers) and page labels. Use 'query' to search within a specific PDF (searches full document text). Use 'book_page' to navigate by printed page number.",
+            description: """
+                Read PDF pages as extracted text + JPEG images — text for accurate \
+                reading, images for diagrams/figures/equations. Also returns the PDF \
+                outline (table of contents) and page labels on every call — use the \
+                outline to navigate to specific chapters. Navigation: 'page' for a \
+                specific page, 'book_page' for printed page numbers (e.g. "42", "xii"), \
+                'page_range' for a range, 'query' to search within THIS specific PDF \
+                (searches full document text, unlike search_references which only covers \
+                cached pages). Default: first 5 pages. Max: 20 pages per call.
+                """,
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
@@ -534,7 +543,7 @@ struct MCPServerSetup {
                     "book_page": .object(["type": .string("string"), "description": .string("Navigate by printed page number (e.g. '42', 'xii'). Uses page labels embedded in the PDF.")]),
                     "page_range": .object(["type": .string("string"), "description": .string("Page range like '10-25'")]),
                     "query": .object(["type": .string("string"), "description": .string("Search within the PDF for text, returns matching pages as images")]),
-                    "max_pages": .object(["type": .string("integer"), "description": .string("Limit pages returned (default: 5). Each page is a JPEG image.")])
+                    "max_pages": .object(["type": .string("integer"), "description": .string("Max pages to return (default: 5, hard cap: 20). For longer sections, make multiple calls with page_range.")])
                 ]),
                 "required": .array([.string("path")])
             ]),
@@ -543,11 +552,19 @@ struct MCPServerSetup {
 
         tools.append(Tool(
             name: "search_references",
-            description: "Full-text search across all PDF documents in the reference library",
+            description: """
+                Keyword search across ALL PDFs in the library. Returns matching books \
+                with page numbers and snippets. IMPORTANT: for books over 200 pages, \
+                only the first 30 pages and chapter titles are indexed here. If you \
+                suspect content is deeper in a specific book, use read_reference with \
+                the 'query' parameter instead — it searches the FULL text of that PDF. \
+                Results are capped per book (default 3) to show breadth across the \
+                library.
+                """,
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
-                    "query": .object(["type": .string("string"), "description": .string("Search terms")]),
+                    "query": .object(["type": .string("string"), "description": .string("Search terms (literal keyword match, case-insensitive)")]),
                     "max_results": .object(["type": .string("integer"), "description": .string("Limit results (default: 10)")]),
                     "max_per_document": .object(["type": .string("integer"), "description": .string("Max results per PDF (default: 3). Set higher to see more pages from each book.")])
                 ]),
@@ -558,7 +575,7 @@ struct MCPServerSetup {
 
         tools.append(Tool(
             name: "get_reference_metadata",
-            description: "Get metadata about a PDF (title, author, pages, size) without reading content",
+            description: "Get PDF metadata (title, author, subject, page count, file size, creation date) without reading any pages. Also reports whether book_page navigation is available. Use this to check a book's details before deciding which pages to read.",
             inputSchema: .object([
                 "type": .string("object"),
                 "properties": .object([
